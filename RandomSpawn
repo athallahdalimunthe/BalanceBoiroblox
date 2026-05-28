@@ -1,0 +1,77 @@
+-- ============================================================
+--  RandomSpawn  (Script)
+--  Place inside: ServerScriptService
+-- ============================================================
+--  Randomly teleports each player to either SpawnMainland
+--  or SpawnUpperCity on join and every respawn
+-- ============================================================
+
+local CONFIG = {
+	-- Must match the exact Part names you placed in Workspace
+	SpawnPoints = {
+		"SpawnMainland",
+		"SpawnUpperCity",
+	},
+	-- How high above the part to spawn (so player doesn't clip into floor)
+	HeightOffset = 5,
+}
+
+local Players = game:GetService("Players")
+
+-- ╔══════════════════════════════════════════╗
+-- ║   GET SPAWN POSITION                     ║
+-- ╚══════════════════════════════════════════╝
+
+local function getRandomSpawnCFrame()
+	-- Pick a random spawn name
+	local chosen = CONFIG.SpawnPoints[math.random(1, #CONFIG.SpawnPoints)]
+	local part   = workspace:FindFirstChild(chosen, true)
+
+	if not part then
+		warn("[RandomSpawn] Could not find part:", chosen, "— using origin")
+		return CFrame.new(0, CONFIG.HeightOffset, 0)
+	end
+
+	-- Spawn slightly above the part center so player lands cleanly
+	return CFrame.new(part.Position + Vector3.new(0, CONFIG.HeightOffset, 0))
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   TELEPORT PLAYER                        ║
+-- ╚══════════════════════════════════════════╝
+
+local function spawnPlayer(player)
+	-- Wait for character to fully load
+	local character = player.Character or player.CharacterAdded:Wait()
+	local hrp       = character:WaitForChild("HumanoidRootPart", 5)
+	local humanoid  = character:WaitForChild("Humanoid", 5)
+
+	if not hrp or not humanoid then
+		warn("[RandomSpawn] Missing HRP or Humanoid for", player.Name)
+		return
+	end
+
+	-- Small wait so Roblox physics settles before we move them
+	task.wait(0.2)
+
+	hrp.CFrame = getRandomSpawnCFrame()
+	print("[RandomSpawn]", player.Name, "→ spawned at random point")
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   HOOK PLAYERS                           ║
+-- ╚══════════════════════════════════════════╝
+
+Players.PlayerAdded:Connect(function(player)
+	-- Fire on every respawn
+	player.CharacterAdded:Connect(function()
+		spawnPlayer(player)
+	end)
+end)
+
+-- Handle players already in server when script runs
+for _, player in ipairs(Players:GetPlayers()) do
+	task.spawn(spawnPlayer, player)
+end
+
+print("[RandomSpawn] Running! Spawn points:", table.concat(CONFIG.SpawnPoints, ", "))
