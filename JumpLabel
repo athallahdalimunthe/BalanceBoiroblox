@@ -1,0 +1,227 @@
+-- ============================================================
+--  JumpLabel LocalScript  (Balance Boi)
+--  Place inside: StarterGui
+-- ============================================================
+--  Shows a floating number above every player's head
+--  showing how many max jumps they currently have.
+--  Updates live when anyone gains or loses a jump.
+-- ============================================================
+
+-- ╔══════════════════════════════════════════╗
+-- ║          CONFIGURATION                   ║
+-- ╚══════════════════════════════════════════╝
+
+local CONFIG = {
+	MinJumps   = 5,
+
+	LabelOffset = Vector3.new(0, 2.5, 0),  -- how high above head
+	LabelSize   = UDim2.new(0, 60, 0, 30), -- size of the billboard
+
+	-- Color per jump count threshold
+	-- (below 6 = white, 6-9 = green, 10-14 = gold, 15+ = pink MLG)
+	Colors = {
+		{ min = 15, color = Color3.fromRGB(255,  80, 220) },  -- pink
+		{ min = 10, color = Color3.fromRGB(255, 200,  50) },  -- gold
+		{ min =  6, color = Color3.fromRGB(100, 255, 130) },  -- green
+		{ min =  1, color = Color3.fromRGB(240, 240, 255) },  -- white
+	},
+}
+
+-- ╔══════════════════════════════════════════╗
+-- ║               SERVICES                   ║
+-- ╚══════════════════════════════════════════╝
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService      = game:GetService("TweenService")
+
+local Player            = Players.LocalPlayer
+
+-- ╔══════════════════════════════════════════╗
+-- ║   WAIT FOR REMOTES                       ║
+-- ╚══════════════════════════════════════════╝
+
+local Remotes            = ReplicatedStorage:WaitForChild("JumpRemotes", 15)
+if not Remotes then
+	warn("[JumpLabel] JumpRemotes not found!")
+	return
+end
+
+local JumpCountBroadcast = Remotes:WaitForChild("JumpCountBroadcast", 10)
+if not JumpCountBroadcast then
+	warn("[JumpLabel] JumpCountBroadcast remote not found!")
+	return
+end
+
+print("[JumpLabel] Remotes connected!")
+
+-- ╔══════════════════════════════════════════╗
+-- ║   LABEL STORAGE                          ║
+-- ╚══════════════════════════════════════════╝
+
+-- labels[player] = { billboard, textLabel }
+local labels = {}
+
+-- ╔══════════════════════════════════════════╗
+-- ║   HELPERS                                ║
+-- ╚══════════════════════════════════════════╝
+
+local function getColor(count)
+	for _, entry in ipairs(CONFIG.Colors) do
+		if count >= entry.min then
+			return entry.color
+		end
+	end
+	return Color3.new(1,1,1)
+end
+
+local function getEmoji(count)
+	if count >= 15 then return "🔥" end
+	if count >= 10 then return "⭐" end
+	if count >= 6  then return "↑" end
+	return ""
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   CREATE LABEL FOR A CHARACTER           ║
+-- ╚══════════════════════════════════════════╝
+
+local function createLabel(character, jumps)
+	-- Find the head to attach to
+	local head = character:WaitForChild("Head", 5)
+	if not head then return end
+
+	-- Remove any existing label first
+	local existingBB = head:FindFirstChild("JumpCountBB")
+	if existingBB then existingBB:Destroy() end
+
+	local bb              = Instance.new("BillboardGui")
+	bb.Name               = "JumpCountBB"
+	bb.Size               = CONFIG.LabelSize
+	bb.StudsOffset        = CONFIG.LabelOffset
+	bb.AlwaysOnTop        = false
+	bb.MaxDistance        = 80   -- hide when very far away
+	bb.Adornee            = head
+	bb.Parent             = head
+
+	-- Background pill
+	local bg              = Instance.new("Frame")
+	bg.Size               = UDim2.new(1, 0, 1, 0)
+	bg.BackgroundColor3   = Color3.fromRGB(10, 10, 20)
+	bg.BackgroundTransparency = 0.4
+	bg.BorderSizePixel    = 0
+	bg.Parent             = bb
+	Instance.new("UICorner", bg).CornerRadius = UDim.new(0.5, 0)
+
+	local stroke          = Instance.new("UIStroke")
+	stroke.Thickness      = 1.5
+	stroke.Color          = getColor(jumps)
+	stroke.Transparency   = 0.3
+	stroke.Parent         = bg
+
+	-- Text
+	local label           = Instance.new("TextLabel")
+	label.Name            = "JumpText"
+	label.Size            = UDim2.new(1, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.Text            = getEmoji(jumps) .. tostring(jumps)
+	label.TextColor3      = getColor(jumps)
+	label.TextScaled      = true
+	label.Font            = Enum.Font.GothamBold
+	label.Parent          = bg
+
+	-- Store reference
+	labels[character] = { billboard = bb, text = label, stroke = stroke }
+
+	return bb, label, stroke
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   UPDATE LABEL FOR A PLAYER              ║
+-- ╚══════════════════════════════════════════╝
+
+local function updateLabel(targetPlayer, newCount)
+	local character = targetPlayer.Character
+	if not character then return end
+
+	local entry = labels[character]
+	if not entry then
+		-- Create it if it doesn't exist yet
+		createLabel(character, newCount)
+		return
+	end
+
+	local color    = getColor(newCount)
+	local text     = getEmoji(newCount) .. tostring(newCount)
+
+	-- Animate: pop scale up then back
+	local bb       = entry.billboard
+	TweenService:Create(bb,
+		TweenInfo.new(0.08, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Size = UDim2.new(0, 76, 0, 38) }
+	):Play()
+	task.delay(0.1, function()
+		TweenService:Create(bb,
+			TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ Size = CONFIG.LabelSize }
+		):Play()
+	end)
+
+	entry.text.Text       = text
+	entry.text.TextColor3 = color
+	entry.stroke.Color    = color
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SETUP EACH PLAYER                      ║
+-- ╚══════════════════════════════════════════╝
+
+local function onCharacterAdded(character, targetPlayer, jumps)
+	-- Wait for character to fully load
+	character:WaitForChild("Head", 5)
+	task.wait(0.2)
+	createLabel(character, jumps or CONFIG.MinJumps)
+
+	-- Clean up label when character is removed
+	character.AncestryChanged:Connect(function()
+		if not character:IsDescendantOf(workspace) then
+			labels[character] = nil
+		end
+	end)
+end
+
+local function setupPlayer(targetPlayer)
+	-- Hook into current character
+	if targetPlayer.Character then
+		task.spawn(onCharacterAdded, targetPlayer.Character, targetPlayer, CONFIG.MinJumps)
+	end
+
+	-- Hook into future characters
+	targetPlayer.CharacterAdded:Connect(function(character)
+		task.spawn(onCharacterAdded, character, targetPlayer, CONFIG.MinJumps)
+	end)
+end
+
+-- Setup all current players
+for _, p in ipairs(Players:GetPlayers()) do
+	setupPlayer(p)
+end
+
+Players.PlayerAdded:Connect(setupPlayer)
+
+Players.PlayerRemoving:Connect(function(p)
+	-- Clean up their label entries
+	if p.Character then
+		labels[p.Character] = nil
+	end
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   LISTEN FOR BROADCAST UPDATES           ║
+-- ╚══════════════════════════════════════════╝
+
+JumpCountBroadcast.OnClientEvent:Connect(function(targetPlayer, newCount)
+	updateLabel(targetPlayer, newCount)
+end)
+
+print("[JumpLabel] Running!")
