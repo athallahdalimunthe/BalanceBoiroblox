@@ -1,0 +1,259 @@
+-- ============================================================
+--  JumpManager  (ServerScript)
+--  Place inside: ServerScriptService
+-- ============================================================
+--  • DataStore saves/loads jumps
+--  • JumpCountBroadcast → all clients (overhead labels)
+--  • Shield system: shielded players can't be hit / can't steal
+-- ============================================================
+
+local CONFIG = {
+	MinJumps     = 5,
+	HitCooldown  = 0.8,
+	HitRange     = 20,
+	ShieldTime   = 12,   -- seconds of protection
+	ShieldCooldown = 30, -- seconds before shield can be used again
+	DataStoreKey = "BalanceBoi_Jumps_v1",
+}
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local DataStoreService  = game:GetService("DataStoreService")
+
+local JumpStore = DataStoreService:GetDataStore(CONFIG.DataStoreKey)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   REMOTES                                ║
+-- ╚══════════════════════════════════════════╝
+
+local old = ReplicatedStorage:FindFirstChild("JumpRemotes")
+if old then old:Destroy() end
+
+local Remotes = Instance.new("Folder")
+Remotes.Name  = "JumpRemotes"
+Remotes.Parent = ReplicatedStorage
+
+local function makeRemote(name, class)
+	local r = Instance.new(class or "RemoteEvent")
+	r.Name   = name
+	r.Parent = Remotes
+	return r
+end
+
+local RequestHit         = makeRemote("RequestHit")
+local JumpCountChanged   = makeRemote("JumpCountChanged")
+local JumpCountBroadcast = makeRemote("JumpCountBroadcast")
+local GotHit             = makeRemote("GotHit")
+local RequestShield      = makeRemote("RequestShield")
+local ShieldStateChanged = makeRemote("ShieldStateChanged")
+local ShieldAbsorbed     = makeRemote("ShieldAbsorbed")   -- tells victim their shield blocked a hit
+
+print("[JumpManager] Remotes created OK")
+
+-- ╔══════════════════════════════════════════╗
+-- ║   STATE                                  ║
+-- ╚══════════════════════════════════════════╝
+
+local playerJumps      = {}  -- [player] = number
+local lastHitTime      = {}  -- [player] = tick()
+local shieldActive     = {}  -- [player] = bool
+local lastShieldTime   = {}  -- [player] = tick() when shield last ENDED
+
+-- ╔══════════════════════════════════════════╗
+-- ║   JUMP HELPERS                           ║
+-- ╚══════════════════════════════════════════╝
+
+local function getJumps(player)
+	return playerJumps[player] or CONFIG.MinJumps
+end
+
+local function setJumps(player, amount)
+	playerJumps[player] = math.max(amount, CONFIG.MinJumps)
+	local count = playerJumps[player]
+	JumpCountChanged:FireClient(player, count)
+	JumpCountBroadcast:FireAllClients(player, count)
+	print("[JumpManager] SET", player.Name, "→", count)
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   DATASTORE                              ║
+-- ╚══════════════════════════════════════════╝
+
+local function loadJumps(player)
+	local ok, data = pcall(function()
+		return JumpStore:GetAsync(tostring(player.UserId))
+	end)
+	if ok and type(data) == "number" then
+		return math.max(data, CONFIG.MinJumps)
+	end
+	if not ok then warn("[JumpManager] Load failed:", player.Name, data) end
+	return CONFIG.MinJumps
+end
+
+local function saveJumps(player)
+	local ok, err = pcall(function()
+		JumpStore:SetAsync(tostring(player.UserId), getJumps(player))
+	end)
+	if not ok then warn("[JumpManager] Save failed:", player.Name, err) end
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SHIELD HELPERS                         ║
+-- ╚══════════════════════════════════════════╝
+
+local function isShielded(player)
+	return shieldActive[player] == true
+end
+
+local function activateShield(player)
+	-- Check cooldown
+	local now = tick()
+	local elapsed = now - (lastShieldTime[player] or 0)
+	if elapsed < CONFIG.ShieldCooldown then
+		local remaining = math.ceil(CONFIG.ShieldCooldown - elapsed)
+		-- Tell just this client: shield on cooldown, how many seconds left
+		ShieldStateChanged:FireClient(player, "cooldown", remaining)
+		print("[JumpManager] Shield cooldown for", player.Name, "—", remaining, "s left")
+		return
+	end
+
+	shieldActive[player] = true
+	print("[JumpManager] 🛡️ Shield ON for", player.Name)
+
+	-- Tell ALL clients this player is now shielded (for overhead indicator)
+	ShieldStateChanged:FireAllClients(player, "on", CONFIG.ShieldTime)
+
+	-- Auto-expire after ShieldTime
+	task.delay(CONFIG.ShieldTime, function()
+		if not player or not player.Parent then return end
+		shieldActive[player]   = false
+		lastShieldTime[player] = tick()
+		ShieldStateChanged:FireAllClients(player, "off", CONFIG.ShieldCooldown)
+		print("[JumpManager] 🛡️ Shield OFF for", player.Name)
+	end)
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   PLAYER SETUP                           ║
+-- ╚══════════════════════════════════════════╝
+
+local function setupPlayer(player)
+	lastHitTime[player]    = 0
+	shieldActive[player]   = false
+	lastShieldTime[player] = 0
+	playerJumps[player]    = loadJumps(player)
+
+	print("[JumpManager] Registered:", player.Name, "→", playerJumps[player], "jumps")
+
+	player.CharacterAdded:Connect(function()
+		task.wait(0.8)
+		local count = getJumps(player)
+		JumpCountChanged:FireClient(player, count)
+		JumpCountBroadcast:FireAllClients(player, count)
+		-- Re-send shield state on respawn so GUI is correct
+		if isShielded(player) then
+			ShieldStateChanged:FireClient(player, "on", CONFIG.ShieldTime)
+		end
+	end)
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+	task.spawn(setupPlayer, player)
+end
+Players.PlayerAdded:Connect(function(p) task.spawn(setupPlayer, p) end)
+
+Players.PlayerRemoving:Connect(function(player)
+	saveJumps(player)
+	playerJumps[player]    = nil
+	lastHitTime[player]    = nil
+	shieldActive[player]   = nil
+	lastShieldTime[player] = nil
+end)
+
+game:BindToClose(function()
+	for _, player in ipairs(Players:GetPlayers()) do
+		task.spawn(saveJumps, player)
+	end
+	task.wait(2)
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SHIELD REQUEST                         ║
+-- ╚══════════════════════════════════════════╝
+
+RequestShield.OnServerEvent:Connect(function(player)
+	if isShielded(player) then return end  -- already active
+	activateShield(player)
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   HIT HANDLER                            ║
+-- ╚══════════════════════════════════════════╝
+
+RequestHit.OnServerEvent:Connect(function(attacker, targetPlayer)
+	if not targetPlayer or not targetPlayer:IsA("Player") then return end
+	if attacker == targetPlayer then return end
+
+	-- Can't punch while shielded (fair — no attacking if protected)
+	if isShielded(attacker) then
+		print("[JumpManager] BLOCKED: attacker", attacker.Name, "is shielded")
+		return
+	end
+
+	-- Target is shielded — hit blocked
+	if isShielded(targetPlayer) then
+		print("[JumpManager] BLOCKED: target", targetPlayer.Name, "is shielded")
+		ShieldStateChanged:FireClient(attacker, "blocked", 0)
+		ShieldAbsorbed:FireClient(targetPlayer)   -- victim hears the block sound
+		return
+	end
+
+	local now = tick()
+	if (now - (lastHitTime[attacker] or 0)) < CONFIG.HitCooldown then return end
+
+	local atkChar  = attacker.Character
+	local tgtChar  = targetPlayer.Character
+	if not atkChar or not tgtChar then return end
+
+	local atkHRP   = atkChar:FindFirstChild("HumanoidRootPart")
+	local tgtHRP   = tgtChar:FindFirstChild("HumanoidRootPart")
+	if not atkHRP or not tgtHRP then return end
+
+	local tgtHuman = tgtChar:FindFirstChild("Humanoid")
+	if not tgtHuman or tgtHuman.Health <= 0 then return end
+
+	local dist = (atkHRP.Position - tgtHRP.Position).Magnitude
+	if dist > CONFIG.HitRange then return end
+
+	lastHitTime[attacker] = now
+
+	local victimJumps   = getJumps(targetPlayer)
+	local attackerJumps = getJumps(attacker)
+	local victimNew     = math.max(victimJumps - 1, CONFIG.MinJumps)
+	local attackerNew   = attackerJumps + 1
+
+	setJumps(targetPlayer, victimNew)
+	setJumps(attacker, attackerNew)
+	GotHit:FireClient(targetPlayer, attacker.Name)
+
+	print(string.format("[JumpManager] ✅ %s hit %s! %s:%d→%d | %s:%d→%d",
+		attacker.Name, targetPlayer.Name,
+		targetPlayer.Name, victimJumps, victimNew,
+		attacker.Name, attackerJumps, attackerNew))
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   ORB HIT  (+1 jump from orb)            ║
+-- ╚══════════════════════════════════════════╝
+
+local OrbHitEvent = ReplicatedStorage:WaitForChild("OrbHit", 10)
+if OrbHitEvent then
+	OrbHitEvent.Event:Connect(function(player)
+		if not playerJumps[player] then return end
+		local old = getJumps(player)
+		setJumps(player, old + 1)
+		print("[JumpManager] ORB +1 →", player.Name, "now has", getJumps(player))
+	end)
+end
+
+print("[JumpManager] Running! Range:", CONFIG.HitRange, "ShieldTime:", CONFIG.ShieldTime)
