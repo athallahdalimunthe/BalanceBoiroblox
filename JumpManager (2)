@@ -1,0 +1,309 @@
+-- ============================================================
+--  JumpManager  (ServerScript)
+--  Place inside: ServerScriptService
+-- ============================================================
+--  Normal jumps  : min 5, saved to DataStore
+--  CasualWing    : min 0, starts at 0, obtained from CW orbs
+--  Hit steals from victim's ACTIVE type
+-- ============================================================
+
+local CONFIG = {
+	NormalMin    = 5,
+	CasualWingMin = 0,
+	HitCooldown  = 0.8,
+	HitRange     = 20,
+	ShieldTime   = 12,
+	ShieldCooldown = 30,
+	DataStoreKey = "BalanceBoi_Jumps_v2",
+}
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local DataStoreService  = game:GetService("DataStoreService")
+local JumpStore         = DataStoreService:GetDataStore(CONFIG.DataStoreKey)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   REMOTES                                ║
+-- ╚══════════════════════════════════════════╝
+
+local old = ReplicatedStorage:FindFirstChild("JumpRemotes")
+if old then old:Destroy() end
+
+local Remotes = Instance.new("Folder")
+Remotes.Name  = "JumpRemotes"
+Remotes.Parent = ReplicatedStorage
+
+local function makeRemote(name, class)
+	local r = Instance.new(class or "RemoteEvent")
+	r.Name = name; r.Parent = Remotes
+	return r
+end
+
+local RequestHit          = makeRemote("RequestHit")
+-- JumpCountChanged fires to owner: (normalCount, casualWingCount)
+local JumpCountChanged    = makeRemote("JumpCountChanged")
+-- Broadcast fires to ALL: (player, normalCount, casualWingCount)
+local JumpCountBroadcast  = makeRemote("JumpCountBroadcast")
+local GotHit              = makeRemote("GotHit")
+local RequestShield       = makeRemote("RequestShield")
+local ShieldStateChanged  = makeRemote("ShieldStateChanged")
+local ShieldAbsorbed      = makeRemote("ShieldAbsorbed")
+-- Client tells server which type is active so hits steal correctly
+local SetActiveType       = makeRemote("SetActiveType")
+-- Orb remotes
+local RequestOrbHit       = makeRemote("RequestOrbHit")
+
+print("[JumpManager] Remotes created OK")
+
+-- ╔══════════════════════════════════════════╗
+-- ║   STATE                                  ║
+-- ╚══════════════════════════════════════════╝
+
+local normalJumps     = {}  -- [player] = number (min 5)
+local casualJumps     = {}  -- [player] = number (min 0)
+local activeType      = {}  -- [player] = "Normal" or "CasualWing"
+local lastHitTime     = {}
+local shieldActive    = {}
+local lastShieldTime  = {}
+local lastOrbHitTime  = {}
+
+-- ╔══════════════════════════════════════════╗
+-- ║   HELPERS                                ║
+-- ╚══════════════════════════════════════════╝
+
+local function sendCounts(player)
+	local n = normalJumps[player] or CONFIG.NormalMin
+	local c = casualJumps[player] or 0
+	JumpCountChanged:FireClient(player, n, c)
+	JumpCountBroadcast:FireAllClients(player, n, c)
+end
+
+local function setNormal(player, amount)
+	normalJumps[player] = math.max(amount, CONFIG.NormalMin)
+	sendCounts(player)
+	print("[JumpManager] Normal:", player.Name, "→", normalJumps[player])
+end
+
+local function setCasual(player, amount)
+	casualJumps[player] = math.max(amount, CONFIG.CasualWingMin)
+	sendCounts(player)
+	print("[JumpManager] CasualWing:", player.Name, "→", casualJumps[player])
+end
+
+local function isShielded(player)
+	return shieldActive[player] == true
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   DATASTORE                              ║
+-- ╚══════════════════════════════════════════╝
+
+local function loadData(player)
+	local ok, data = pcall(function()
+		return JumpStore:GetAsync(tostring(player.UserId))
+	end)
+	if ok and type(data) == "table" then
+		return
+			math.max(data.normal or CONFIG.NormalMin, CONFIG.NormalMin),
+		math.max(data.casual or 0, 0)
+	end
+	if not ok then warn("[JumpManager] Load failed:", player.Name, data) end
+	return CONFIG.NormalMin, 0
+end
+
+local function saveData(player)
+	local ok, err = pcall(function()
+		JumpStore:SetAsync(tostring(player.UserId), {
+			normal = normalJumps[player] or CONFIG.NormalMin,
+			casual = casualJumps[player] or 0,
+		})
+	end)
+	if not ok then warn("[JumpManager] Save failed:", player.Name, err) end
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SHIELD                                 ║
+-- ╚══════════════════════════════════════════╝
+
+local function activateShield(player)
+	local now     = tick()
+	local elapsed = now - (lastShieldTime[player] or 0)
+	if elapsed < CONFIG.ShieldCooldown then
+		ShieldStateChanged:FireClient(player, "cooldown", math.ceil(CONFIG.ShieldCooldown - elapsed))
+		return
+	end
+	shieldActive[player] = true
+	ShieldStateChanged:FireAllClients(player, "on", CONFIG.ShieldTime)
+	print("[JumpManager] 🛡️ Shield ON:", player.Name)
+	task.delay(CONFIG.ShieldTime, function()
+		if not player or not player.Parent then return end
+		shieldActive[player]   = false
+		lastShieldTime[player] = tick()
+		ShieldStateChanged:FireAllClients(player, "off", CONFIG.ShieldCooldown)
+		print("[JumpManager] 🛡️ Shield OFF:", player.Name)
+	end)
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   PLAYER SETUP                           ║
+-- ╚══════════════════════════════════════════╝
+
+local function setupPlayer(player)
+	lastHitTime[player]    = 0
+	lastOrbHitTime[player] = 0
+	shieldActive[player]   = false
+	lastShieldTime[player] = 0
+	activeType[player]     = "Normal"
+
+	local n, c = loadData(player)
+	normalJumps[player] = n
+	casualJumps[player] = c
+	print("[JumpManager] Registered:", player.Name, "Normal:", n, "CasualWing:", c)
+
+	player.CharacterAdded:Connect(function()
+		task.wait(0.8)
+		sendCounts(player)
+		if isShielded(player) then
+			ShieldStateChanged:FireClient(player, "on", CONFIG.ShieldTime)
+		end
+	end)
+end
+
+for _, p in ipairs(Players:GetPlayers()) do task.spawn(setupPlayer, p) end
+Players.PlayerAdded:Connect(function(p) task.spawn(setupPlayer, p) end)
+
+Players.PlayerRemoving:Connect(function(player)
+	saveData(player)
+	normalJumps[player]    = nil
+	casualJumps[player]    = nil
+	activeType[player]     = nil
+	lastHitTime[player]    = nil
+	lastOrbHitTime[player] = nil
+	shieldActive[player]   = nil
+	lastShieldTime[player] = nil
+end)
+
+game:BindToClose(function()
+	for _, p in ipairs(Players:GetPlayers()) do task.spawn(saveData, p) end
+	task.wait(2)
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   ACTIVE TYPE SYNC                       ║
+-- ╚══════════════════════════════════════════╝
+
+SetActiveType.OnServerEvent:Connect(function(player, typeName)
+	if typeName == "Normal" or typeName == "CasualWing" then
+		activeType[player] = typeName
+	end
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SHIELD REQUEST                         ║
+-- ╚══════════════════════════════════════════╝
+
+RequestShield.OnServerEvent:Connect(function(player)
+	if not isShielded(player) then activateShield(player) end
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   HIT HANDLER                            ║
+-- ╚══════════════════════════════════════════╝
+
+RequestHit.OnServerEvent:Connect(function(attacker, targetPlayer)
+	if not targetPlayer or not targetPlayer:IsA("Player") then return end
+	if attacker == targetPlayer then return end
+	if isShielded(attacker) then return end
+
+	if isShielded(targetPlayer) then
+		ShieldStateChanged:FireClient(attacker, "blocked", 0)
+		ShieldAbsorbed:FireClient(targetPlayer)
+		return
+	end
+
+	local now = tick()
+	if (now - (lastHitTime[attacker] or 0)) < CONFIG.HitCooldown then return end
+
+	local atkChar  = attacker.Character
+	local tgtChar  = targetPlayer.Character
+	if not atkChar or not tgtChar then return end
+	local atkHRP   = atkChar:FindFirstChild("HumanoidRootPart")
+	local tgtHRP   = tgtChar:FindFirstChild("HumanoidRootPart")
+	if not atkHRP or not tgtHRP then return end
+	local tgtHuman = tgtChar:FindFirstChild("Humanoid")
+	if not tgtHuman or tgtHuman.Health <= 0 then return end
+
+	local dist = (atkHRP.Position - tgtHRP.Position).Magnitude
+	if dist > CONFIG.HitRange then return end
+
+	lastHitTime[attacker] = now
+
+	-- Steal from victim's ACTIVE type
+	local victimType = activeType[targetPlayer] or "Normal"
+
+	if victimType == "Normal" then
+		local vOld = normalJumps[targetPlayer] or CONFIG.NormalMin
+		local vNew = math.max(vOld - 1, CONFIG.NormalMin)
+		normalJumps[targetPlayer] = vNew
+		sendCounts(targetPlayer)
+		-- Attacker gains +1 Normal
+		normalJumps[attacker] = (normalJumps[attacker] or CONFIG.NormalMin) + 1
+		sendCounts(attacker)
+		print(string.format("[JumpManager] ✅ Normal steal: %s hit %s | N:%d→%d",
+			attacker.Name, targetPlayer.Name, vOld, vNew))
+
+	elseif victimType == "CasualWing" then
+		local vOld = casualJumps[targetPlayer] or 0
+		local vNew = math.max(vOld - 1, CONFIG.CasualWingMin)  -- can go to 0!
+		casualJumps[targetPlayer] = vNew
+		sendCounts(targetPlayer)
+		-- Attacker gains +1 CasualWing
+		casualJumps[attacker] = (casualJumps[attacker] or 0) + 1
+		sendCounts(attacker)
+		print(string.format("[JumpManager] ✅ CasualWing steal: %s hit %s | CW:%d→%d",
+			attacker.Name, targetPlayer.Name, vOld, vNew))
+	end
+
+	GotHit:FireClient(targetPlayer, attacker.Name)
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   ORB HIT                                ║
+-- ╚══════════════════════════════════════════╝
+
+RequestOrbHit.OnServerEvent:Connect(function(player, orbPart, orbType)
+	if not orbPart or not orbPart.Parent then return end
+	if orbPart.Name ~= "JumpOrb" then return end
+
+	local now = tick()
+	if (now - (lastOrbHitTime[player] or 0)) < 0.5 then return end
+	lastOrbHitTime[player] = now
+
+	local char = player.Character
+	if not char then return end
+	local hrp  = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	if (hrp.Position - orbPart.Position).Magnitude > 20 then return end
+
+	-- Fire OrbHit BindableEvent so OrbManager can despawn the orb
+	local orbHitEvent = ReplicatedStorage:FindFirstChild("OrbHit")
+	if orbHitEvent then orbHitEvent:Fire(player, orbPart, orbType) end
+end)
+
+-- Listen for confirmed orb grants from OrbManager
+local OrbGrant = ReplicatedStorage:WaitForChild("OrbGrant", 10)
+if OrbGrant then
+	OrbGrant.Event:Connect(function(player, orbType)
+		if orbType == "Normal" then
+			normalJumps[player] = (normalJumps[player] or CONFIG.NormalMin) + 1
+			sendCounts(player)
+			print("[JumpManager] Normal ORB +1 →", player.Name, normalJumps[player])
+		elseif orbType == "CasualWing" then
+			casualJumps[player] = (casualJumps[player] or 0) + 1
+			sendCounts(player)
+			print("[JumpManager] CasualWing ORB +1 →", player.Name, casualJumps[player])
+		end
+	end)
+end
+
+print("[JumpManager] Running! Range:", CONFIG.HitRange)
