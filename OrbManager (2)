@@ -1,0 +1,236 @@
+-- ============================================================
+--  OrbManager  (ServerScript)
+--  Place inside: ServerScriptService
+-- ============================================================
+--  Two orb types:
+--  • Normal orb     → gold,  spawns in all 3 zones
+--  • CasualWing orb → cyan,  spawns in all 3 zones
+-- ============================================================
+
+local CONFIG = {
+	OrbDecalId     = "rbxassetid://73061577156450",  -- fallback only
+	RespawnTime    = 18,
+	HitRange       = 20,
+	ScatterRadius  = 40,
+	FloatHeight    = 4,
+
+	OrbTypes = {
+		{
+			name      = "Normal",
+			decalId   = "rbxassetid://73061577156450",   -- ← your Normal orb image ID
+			color     = Color3.fromRGB(255, 210, 50),
+			lightColor = Color3.fromRGB(255, 200, 80),
+			orbsPerZone = 3,
+		},
+		{
+			name      = "CasualWing",
+			decalId   = "rbxassetid://91638214000777",   -- ← your CasualWing orb image ID
+			color     = Color3.fromRGB(80, 220, 255),
+			lightColor = Color3.fromRGB(100, 200, 255),
+			orbsPerZone = 2,
+		},
+	},
+
+	Zones = { "Mainland", "BalanceBoiLogo", "UpperCity" },
+}
+
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService      = game:GetService("TweenService")
+local RunService        = game:GetService("RunService")
+
+-- ╔══════════════════════════════════════════╗
+-- ║   BINDABLE EVENTS                        ║
+-- ╚══════════════════════════════════════════╝
+
+-- OrbManager receives hit from JumpManager
+local OrbHit = Instance.new("BindableEvent")
+OrbHit.Name  = "OrbHit"
+OrbHit.Parent = ReplicatedStorage
+
+-- OrbManager confirms grant back to JumpManager
+local OrbGrant = Instance.new("BindableEvent")
+OrbGrant.Name  = "OrbGrant"
+OrbGrant.Parent = ReplicatedStorage
+
+-- ╔══════════════════════════════════════════╗
+-- ║   ZONE CENTERS                           ║
+-- ╚══════════════════════════════════════════╝
+
+local function getZoneCenter(zoneName)
+	local obj = workspace:FindFirstChild(zoneName, true)
+	if not obj then
+		warn("[OrbManager] Zone not found:", zoneName)
+		return nil
+	end
+	if obj:IsA("BasePart") then return obj.Position end
+	if obj:IsA("Model") then
+		local cf, _ = obj:GetBoundingBox()
+		return cf.Position
+	end
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   BUILD SPAWN POSITIONS                  ║
+-- ╚══════════════════════════════════════════╝
+
+local orbSpawnList = {}  -- { pos, orbTypeName }
+
+for _, zone in ipairs(CONFIG.Zones) do
+	local center = getZoneCenter(zone)
+	if center then
+		for _, orbType in ipairs(CONFIG.OrbTypes) do
+			for _ = 1, orbType.orbsPerZone do
+				local angle  = math.random() * math.pi * 2
+				local radius = math.random(5, CONFIG.ScatterRadius)
+				local pos    = Vector3.new(
+					center.X + math.cos(angle) * radius,
+					center.Y + CONFIG.FloatHeight,
+					center.Z + math.sin(angle) * radius
+				)
+				table.insert(orbSpawnList, { pos = pos, typeName = orbType.name })
+			end
+		end
+		print("[OrbManager] Zone", zone, "positions set")
+	end
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   ORB FACTORY                            ║
+-- ╚══════════════════════════════════════════╝
+
+local activeOrbs = {}  -- [orbData] = Part
+
+local function getOrbTypeConfig(typeName)
+	for _, t in ipairs(CONFIG.OrbTypes) do
+		if t.name == typeName then return t end
+	end
+	return CONFIG.OrbTypes[1]
+end
+
+local function spawnOrb(orbData)
+	local typeConf = getOrbTypeConfig(orbData.typeName)
+
+	local part               = Instance.new("Part")
+	part.Name                = "JumpOrb"
+	part.Size                = Vector3.new(3.5, 3.5, 3.5)
+	part.Shape               = Enum.PartType.Ball
+	part.Color               = typeConf.color
+	part.Material            = Enum.Material.Neon
+	part.Anchored            = true
+	part.CanCollide          = false
+	part.CastShadow          = false
+	part.Position            = orbData.pos
+	-- Tag orb type so server can read it
+	local tag                = Instance.new("StringValue")
+	tag.Name                 = "OrbType"
+	tag.Value                = orbData.typeName
+	tag.Parent               = part
+	part.Parent              = workspace
+
+	-- Decal
+	for _, face in ipairs({ "Front","Back","Left","Right","Top","Bottom" }) do
+		local d       = Instance.new("Decal")
+		d.Texture     = typeConf.decalId or CONFIG.OrbDecalId
+		d.Face        = Enum.NormalId[face]
+		d.Parent      = part
+	end
+
+	-- Label above orb showing type
+	local bb              = Instance.new("BillboardGui")
+	bb.Size               = UDim2.new(0, 80, 0, 20)
+	bb.StudsOffset        = Vector3.new(0, 3, 0)
+	bb.AlwaysOnTop        = false
+	bb.Adornee            = part
+	bb.Parent             = part
+	local lbl             = Instance.new("TextLabel")
+	lbl.Size              = UDim2.new(1,0,1,0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text              = orbData.typeName == "CasualWing" and "🪶 CasualWing" or "⭐ Normal"
+	lbl.TextColor3        = typeConf.color
+	lbl.TextScaled        = true
+	lbl.Font              = Enum.Font.GothamBold
+	lbl.Parent            = bb
+
+	-- Point light
+	local light           = Instance.new("PointLight")
+	light.Brightness      = 3
+	light.Range           = 14
+	light.Color           = typeConf.lightColor
+	light.Parent          = part
+
+	-- Bob animation
+	TweenService:Create(part,
+		TweenInfo.new(1.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{ Position = orbData.pos + Vector3.new(0, 1.2, 0) }
+	):Play()
+
+	-- Spin
+	local spinConn
+	spinConn = RunService.Heartbeat:Connect(function(dt)
+		if not part or not part.Parent then spinConn:Disconnect(); return end
+		part.CFrame = part.CFrame * CFrame.Angles(0, dt * 1.2, 0)
+	end)
+
+	activeOrbs[orbData] = part
+end
+
+local function despawnOrb(orbData)
+	local part = activeOrbs[orbData]
+	if not part then return end
+	activeOrbs[orbData] = nil
+
+	-- Flash and destroy
+	TweenService:Create(part,
+		TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Size = Vector3.new(7,7,7), Transparency = 1 }
+	):Play()
+	task.delay(0.22, function()
+		if part and part.Parent then part:Destroy() end
+	end)
+
+	-- Respawn
+	task.delay(CONFIG.RespawnTime, function()
+		spawnOrb(orbData)
+	end)
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   HIT HANDLER                            ║
+-- ╚══════════════════════════════════════════╝
+
+OrbHit.Event:Connect(function(player, orbPart, _)
+	-- Find which orbData this part belongs to
+	local hitOrbData = nil
+	for orbData, part in pairs(activeOrbs) do
+		if part == orbPart then hitOrbData = orbData; break end
+	end
+	if not hitOrbData then return end
+
+	local typeName = hitOrbData.typeName
+	despawnOrb(hitOrbData)
+
+	-- Tell JumpManager to grant +1 of this type
+	OrbGrant:Fire(player, typeName)
+	print("[OrbManager] ✅", player.Name, "hit", typeName, "orb! +1")
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   CLEANUP                                ║
+-- ╚══════════════════════════════════════════╝
+
+Players.PlayerRemoving:Connect(function(player)
+	-- nothing orb-specific needed
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SPAWN ALL ORBS                         ║
+-- ╚══════════════════════════════════════════╝
+
+task.wait(2)
+for _, orbData in ipairs(orbSpawnList) do
+	spawnOrb(orbData)
+	task.wait(0.05)
+end
+
+print("[OrbManager] All orbs spawned! Total:", #orbSpawnList)
