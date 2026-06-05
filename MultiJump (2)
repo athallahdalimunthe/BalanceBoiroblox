@@ -1,0 +1,494 @@
+-- ============================================================
+--  MultiJump  LocalScript  (Balance Boi)  v5
+--  Place inside: StarterPlayer > StarterCharacterScripts
+-- ============================================================
+
+local CONFIG = {
+	NormalMin      = 5,
+	JumpPower      = 55,
+	ExtraJumpPower = 50,
+	JumpSoundId    = "rbxassetid://138963217663286",
+	RingImageId    = "rbxassetid://82148779521057",
+	HitRange       = 20,
+	PunchCooldown  = 0.5,
+	CameraShakeAmount = 0.18,
+
+	CasualWingSoundId = "rbxassetid://139416774644323",
+	CasualWingBursts  = 5,
+	CasualWingPower   = 192,
+	CasualWingDelay   = 0.08,
+
+	JumpColors = {
+		Color3.fromRGB(255, 255, 255),
+		Color3.fromRGB(100, 220, 255),
+		Color3.fromRGB(120, 255, 120),
+		Color3.fromRGB(255, 200,  60),
+		Color3.fromRGB(255,  80, 200),
+		Color3.fromRGB(255, 120,  60),
+		Color3.fromRGB(200,  80, 255),
+		Color3.fromRGB(255, 255,  60),
+	},
+}
+
+local Players           = game:GetService("Players")
+local UserInputService  = game:GetService("UserInputService")
+local TweenService      = game:GetService("TweenService")
+local RunService        = game:GetService("RunService")
+local Debris            = game:GetService("Debris")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Player    = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+local Camera    = workspace.CurrentCamera
+
+-- ╔══════════════════════════════════════════╗
+-- ║   REMOTES                                ║
+-- ╚══════════════════════════════════════════╝
+
+local Remotes = ReplicatedStorage:WaitForChild("JumpRemotes", 15)
+if not Remotes then
+	warn("[MultiJump] JumpRemotes not found!")
+	return
+end
+
+local RequestHit       = Remotes:WaitForChild("RequestHit", 10)
+local JumpCountChanged = Remotes:WaitForChild("JumpCountChanged", 10)
+local GotHit           = Remotes:WaitForChild("GotHit", 10)
+local RequestOrbHit    = Remotes:WaitForChild("RequestOrbHit", 10)
+local SetActiveType    = Remotes:WaitForChild("SetActiveType", 10)
+local ShieldStateChanged = Remotes:WaitForChild("ShieldStateChanged", 10)
+local ShieldAbsorbed   = Remotes:WaitForChild("ShieldAbsorbed", 10)
+
+print("[MultiJump] Remotes OK")
+
+-- ╔══════════════════════════════════════════╗
+-- ║   CHARACTER                              ║
+-- ╚══════════════════════════════════════════╝
+
+local Character    = script.Parent
+local Humanoid     = Character:WaitForChild("Humanoid")
+local HRP          = Character:WaitForChild("HumanoidRootPart")
+
+-- ╔══════════════════════════════════════════╗
+-- ║   STATE                                  ║
+-- ╚══════════════════════════════════════════╝
+
+local normalMax    = CONFIG.NormalMin
+local normalLeft   = normalMax
+local casualMax    = 0
+local casualLeft   = 0
+local jumpType     = "Normal"   -- "Normal" or "CasualWing"
+local isGrounded   = true
+local jumpCooldown = false
+local punchCooldown = false
+local isShielded   = false
+local winging      = false
+
+-- ╔══════════════════════════════════════════╗
+-- ║   CLEANUP PREVIOUS LIFE                  ║
+-- ╚══════════════════════════════════════════╝
+
+for _, name in ipairs({"JumpFlash","RequestJump","RequestPunch","SwitchJumpType"}) do
+	local old = PlayerGui:FindFirstChild(name)
+	if old then old:Destroy() end
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SCREEN FLASH                           ║
+-- ╚══════════════════════════════════════════╝
+
+local flashGui           = Instance.new("ScreenGui")
+flashGui.Name            = "JumpFlash"
+flashGui.ResetOnSpawn    = false
+flashGui.IgnoreGuiInset  = true
+flashGui.Parent          = PlayerGui
+
+local flashFrame         = Instance.new("Frame")
+flashFrame.Size          = UDim2.new(1,0,1,0)
+flashFrame.BackgroundTransparency = 1
+flashFrame.BorderSizePixel = 0
+flashFrame.Parent        = flashGui
+
+local function screenFlash(color)
+	flashFrame.BackgroundColor3 = color
+	flashFrame.BackgroundTransparency = 0.55
+	TweenService:Create(flashFrame,
+		TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ BackgroundTransparency = 1 }
+	):Play()
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SOUNDS                                 ║
+-- ╚══════════════════════════════════════════╝
+
+local function makeSound(id, vol, pitch)
+	local s = Instance.new("Sound")
+	s.SoundId = id; s.Volume = vol or 0.8
+	if pitch then s.PlaybackSpeed = pitch end
+	s.Parent = HRP
+	return s
+end
+
+local jumpSound       = makeSound(CONFIG.JumpSoundId, 0.7)
+local stealSound      = makeSound("rbxassetid://133177738208654", 1)
+local lostSound       = makeSound(CONFIG.JumpSoundId, 0.8, 0.6)
+local shieldBlockSnd  = makeSound("rbxassetid://134739191091519", 1)
+local casualWingSound = makeSound(CONFIG.CasualWingSoundId, 0.9)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   RING BURST                             ║
+-- ╚══════════════════════════════════════════╝
+
+local function getColor(index)
+	local c = CONFIG.JumpColors
+	return c[((index-1) % #c) + 1]
+end
+
+local function spawnRing(jumpIndex, color)
+	color = color or getColor(jumpIndex)
+	local att = Instance.new("Attachment")
+	att.Position = Vector3.new(0, -2.5, 0)
+	att.Parent   = HRP
+
+	local bb  = Instance.new("BillboardGui")
+	bb.Size   = UDim2.new(0,10,0,10)
+	bb.Adornee = att; bb.Parent = workspace
+
+	local img = Instance.new("ImageLabel")
+	img.Size  = UDim2.new(1,0,1,0)
+	img.BackgroundTransparency = 1
+	img.Image = CONFIG.RingImageId
+	img.ImageColor3 = color
+	img.Parent = bb
+
+	TweenService:Create(bb, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Size = UDim2.new(0,60,0,60) }):Play()
+	TweenService:Create(img, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ ImageTransparency = 1 }):Play()
+
+	Debris:AddItem(bb, 0.5); Debris:AddItem(att, 0.5)
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   CAMERA SHAKE                           ║
+-- ╚══════════════════════════════════════════╝
+
+local shakeTime = 0; local shakeMag = 0
+
+local shakeConn = RunService.RenderStepped:Connect(function(dt)
+	if shakeTime > 0 then
+		shakeTime -= dt
+		Camera.CFrame = Camera.CFrame * CFrame.new(
+			math.random(-100,100)/100 * shakeMag,
+			math.random(-100,100)/100 * shakeMag, 0)
+	end
+end)
+
+Character.AncestryChanged:Connect(function()
+	if not Character:IsDescendantOf(workspace) then shakeConn:Disconnect() end
+end)
+
+local function shakeCamera(mag, dur) shakeMag = mag; shakeTime = dur end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   NOTIFY GUI                             ║
+-- ╚══════════════════════════════════════════╝
+
+local function notifyGUI()
+	local gui = PlayerGui:FindFirstChild("GameplayGUI")
+	if not gui then return end
+	local ev = gui:FindFirstChild("JumpUpdate")
+	if ev then ev:Fire(normalLeft, normalMax, casualLeft, casualMax, jumpType) end
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   GROUND DETECTION                       ║
+-- ╚══════════════════════════════════════════╝
+
+Humanoid.StateChanged:Connect(function(_, new)
+	if new == Enum.HumanoidStateType.Landed
+		or new == Enum.HumanoidStateType.Running
+		or new == Enum.HumanoidStateType.RunningNoPhysics then
+		normalLeft = normalMax
+		casualLeft = casualMax
+		isGrounded = true
+		notifyGUI()
+	elseif new == Enum.HumanoidStateType.Freefall
+		or     new == Enum.HumanoidStateType.Jumping then
+		isGrounded = false
+	end
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SERVER → CLIENT: counts updated        ║
+-- ╚══════════════════════════════════════════╝
+
+JumpCountChanged.OnClientEvent:Connect(function(newNormal, newCasual)
+	print("[MultiJump] Counts: Normal=", newNormal, "CasualWing=", newCasual)
+	local gainedNormal = newNormal > normalMax
+	local gainedCasual = newCasual > casualMax
+
+	normalMax  = newNormal
+	casualMax  = newCasual
+	normalLeft = math.min(normalLeft, normalMax)
+	casualLeft = math.min(casualLeft, casualMax)
+	notifyGUI()
+
+	if gainedNormal or gainedCasual then
+		screenFlash(Color3.fromRGB(80, 255, 120))
+		stealSound:Play()
+	end
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   GOT HIT                                ║
+-- ╚══════════════════════════════════════════╝
+
+GotHit.OnClientEvent:Connect(function(attackerName)
+	print("[MultiJump] Got hit by:", attackerName)
+	screenFlash(Color3.fromRGB(255, 60, 60))
+	shakeCamera(0.35, 0.18)
+	lostSound:Play()
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SHIELD STATE                           ║
+-- ╚══════════════════════════════════════════╝
+
+if ShieldStateChanged then
+	ShieldStateChanged.OnClientEvent:Connect(function(targetPlayer, state, _value)
+		if targetPlayer == Player then
+			if state == "on" then isShielded = true
+			elseif state == "off" then isShielded = false
+			elseif state == "blocked" then
+				screenFlash(Color3.fromRGB(80, 160, 255))
+				shakeCamera(0.1, 0.06)
+				shieldBlockSnd:Play()
+			end
+		end
+
+		-- Protected label overhead
+		local targetChar = targetPlayer.Character
+		if not targetChar then return end
+		local targetHRP  = targetChar:FindFirstChild("HumanoidRootPart")
+		if not targetHRP then return end
+		local existing = targetHRP:FindFirstChild("ProtectedLabel")
+		if existing then existing:Destroy() end
+
+		if state == "on" then
+			local bb  = Instance.new("BillboardGui")
+			bb.Name   = "ProtectedLabel"
+			bb.Size   = UDim2.new(0,120,0,30)
+			bb.StudsOffset = Vector3.new(0,3.5,0)
+			bb.Adornee = targetHRP; bb.Parent = targetHRP
+			local bg  = Instance.new("Frame")
+			bg.Size   = UDim2.new(1,0,1,0)
+			bg.BackgroundColor3 = Color3.fromRGB(20,60,140)
+			bg.BackgroundTransparency = 0.3
+			bg.BorderSizePixel = 0; bg.Parent = bb
+			Instance.new("UICorner", bg).CornerRadius = UDim.new(0,8)
+			local lbl = Instance.new("TextLabel")
+			lbl.Size  = UDim2.new(1,0,1,0)
+			lbl.BackgroundTransparency = 1
+			lbl.Text  = "🛡️ Protected"
+			lbl.TextColor3 = Color3.fromRGB(180,220,255)
+			lbl.TextScaled = true
+			lbl.Font  = Enum.Font.GothamBold
+			lbl.Parent = bg
+			task.spawn(function()
+				while bb and bb.Parent do
+					TweenService:Create(lbl, TweenInfo.new(0.6,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut), {TextTransparency=0.4}):Play()
+					task.wait(0.6)
+					TweenService:Create(lbl, TweenInfo.new(0.6,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut), {TextTransparency=0}):Play()
+					task.wait(0.6)
+				end
+			end)
+		end
+	end)
+end
+
+if ShieldAbsorbed then
+	ShieldAbsorbed.OnClientEvent:Connect(function()
+		shieldBlockSnd:Play()
+		screenFlash(Color3.fromRGB(80,160,255))
+	end)
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   JUMP TYPE SWITCHER  (from GUI)         ║
+-- ╚══════════════════════════════════════════╝
+
+local SwitchJumpType    = Instance.new("BindableFunction")
+SwitchJumpType.Name     = "SwitchJumpType"
+SwitchJumpType.Parent   = PlayerGui
+SwitchJumpType.OnInvoke = function(newType)
+	jumpType = newType
+	-- Tell server so hit logic knows victim's active type
+	SetActiveType:FireServer(newType)
+	notifyGUI()
+	print("[MultiJump] Jump type →", jumpType)
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   CASUAL WING BURST                      ║
+-- ╚══════════════════════════════════════════╝
+
+local function doCasualWingBurst()
+	if casualLeft <= 0 then return end
+	if winging then return end
+	winging    = true
+	casualLeft -= 1
+	notifyGUI()
+	casualWingSound:Play()
+
+	local cyanColor = Color3.fromRGB(80, 220, 255)
+	for i = 1, CONFIG.CasualWingBursts do
+		if Humanoid.Health <= 0 then break end
+		HRP.AssemblyLinearVelocity = Vector3.new(
+			HRP.AssemblyLinearVelocity.X,
+			CONFIG.CasualWingPower,
+			HRP.AssemblyLinearVelocity.Z
+		)
+		Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		spawnRing(i, cyanColor)
+		screenFlash(cyanColor)
+		if i >= 3 then shakeCamera(CONFIG.CameraShakeAmount * i * 0.5, 0.06) end
+		task.wait(CONFIG.CasualWingDelay)
+	end
+
+	winging    = false
+	isGrounded = false
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   CORE JUMP                              ║
+-- ╚══════════════════════════════════════════╝
+
+local function doJump()
+	if jumpCooldown then return end
+	if Humanoid.Health <= 0 then return end
+	if isShielded and not isGrounded then return end
+	if winging then return end
+
+	-- CasualWing air burst
+	if jumpType == "CasualWing" and not isGrounded then
+		if casualLeft <= 0 then return end
+		jumpCooldown = true
+		task.delay(0.3, function() jumpCooldown = false end)
+		task.spawn(doCasualWingBurst)
+		return
+	end
+
+	-- Normal jump
+	if normalLeft <= 0 then return end
+	local currentJump = (normalMax - normalLeft) + 1
+
+	jumpCooldown = true
+	task.delay(0.12, function() jumpCooldown = false end)
+
+	if not isGrounded then
+		local power = math.max(CONFIG.ExtraJumpPower - (currentJump - 2) * 2, 35)
+		HRP.AssemblyLinearVelocity = Vector3.new(
+			HRP.AssemblyLinearVelocity.X, power, HRP.AssemblyLinearVelocity.Z)
+		Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+	else
+		Humanoid.JumpPower = CONFIG.JumpPower
+		Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		isGrounded = false
+	end
+
+	normalLeft -= 1
+	spawnRing(currentJump)
+	jumpSound:Play()
+
+	if currentJump >= 2 then
+		screenFlash(getColor(currentJump))
+		shakeCamera(CONFIG.CameraShakeAmount * (currentJump - 1), 0.1)
+	end
+
+	notifyGUI()
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   PUNCH                                  ║
+-- ╚══════════════════════════════════════════╝
+
+local function tryPunch()
+	if punchCooldown then return end
+	if Humanoid.Health <= 0 then return end
+	if isShielded then return end
+
+	punchCooldown = true
+	task.delay(CONFIG.PunchCooldown, function() punchCooldown = false end)
+
+	-- Check players first
+	local closest = nil; local closestDist = CONFIG.HitRange
+	for _, op in ipairs(Players:GetPlayers()) do
+		if op == Player then continue end
+		local oc = op.Character; if not oc then continue end
+		local oh = oc:FindFirstChild("HumanoidRootPart"); if not oh then continue end
+		local om = oc:FindFirstChild("Humanoid")
+		if not om or om.Health <= 0 then continue end
+		local d = (HRP.Position - oh.Position).Magnitude
+		if d < closestDist then closestDist = d; closest = op end
+	end
+
+	if closest then
+		RequestHit:FireServer(closest)
+		shakeCamera(0.15, 0.08)
+		return
+	end
+
+	-- Check orbs
+	local closestOrb = nil; local closestOrbDist = CONFIG.HitRange
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj.Name == "JumpOrb" and obj:IsA("BasePart") then
+			local d = (HRP.Position - obj.Position).Magnitude
+			if d < closestOrbDist then closestOrbDist = d; closestOrb = obj end
+		end
+	end
+
+	if closestOrb then
+		local orbType = closestOrb:FindFirstChild("OrbType")
+		RequestOrbHit:FireServer(closestOrb, orbType and orbType.Value or "Normal")
+		shakeCamera(0.1, 0.06)
+		local isNormal = (not orbType) or orbType.Value == "Normal"
+		screenFlash(isNormal and Color3.fromRGB(255,220,50) or Color3.fromRGB(80,220,255))
+	end
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   INPUT                                  ║
+-- ╚══════════════════════════════════════════╝
+
+UserInputService.JumpRequest:Connect(doJump)
+
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.F
+		or input.UserInputType == Enum.UserInputType.MouseButton1 then
+		tryPunch()
+	end
+end)
+
+local jumpFunc    = Instance.new("BindableFunction")
+jumpFunc.Name     = "RequestJump"; jumpFunc.Parent = PlayerGui
+jumpFunc.OnInvoke = doJump
+
+local punchFunc   = Instance.new("BindableFunction")
+punchFunc.Name    = "RequestPunch"; punchFunc.Parent = PlayerGui
+punchFunc.OnInvoke = tryPunch
+
+-- ╔══════════════════════════════════════════╗
+-- ║   DEATH CLEANUP                          ║
+-- ╚══════════════════════════════════════════╝
+
+Humanoid.Died:Connect(function()
+	notifyGUI()
+	task.delay(0.1, function()
+		if flashGui and flashGui.Parent then flashGui:Destroy() end
+	end)
+end)
+
+print("[MultiJump v5] Ready!")
