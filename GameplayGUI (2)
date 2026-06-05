@@ -1,0 +1,333 @@
+-- ============================================================
+--  GameplayGUI  LocalScript  (Balance Boi)
+--  Place inside: StarterGui
+-- ============================================================
+--  One pip bar, top-center.
+--  Pip image + bar color changes when you switch jump type.
+-- ============================================================
+
+local CONFIG = {
+	-- ── Pip images per type ─────────────────────────────────
+	Normal = {
+		PipFull  = "rbxassetid://73061577156450",   -- ← swap
+		PipEmpty = "rbxassetid://73061577156450",  -- ← swap
+		StrokeColor = Color3.fromRGB(180, 180, 255),
+		GlowColor   = Color3.fromRGB(255,  60, 200),
+		PipColors = {
+			Color3.fromRGB(255, 255, 255),
+			Color3.fromRGB(100, 220, 255),
+			Color3.fromRGB(120, 255, 120),
+			Color3.fromRGB(255, 200,  60),
+			Color3.fromRGB(255,  80, 200),
+			Color3.fromRGB(255, 120,  60),
+			Color3.fromRGB(200,  80, 255),
+			Color3.fromRGB(255, 255,  60),
+		},
+	},
+	CasualWing = {
+		PipFull  = "rbxassetid://91638214000777",   -- ← swap
+		PipEmpty = "rbxassetid://91638214000777",  -- ← swap
+		StrokeColor = Color3.fromRGB(80, 220, 255),
+		GlowColor   = Color3.fromRGB(80, 220, 255),
+		PipColors = {
+			Color3.fromRGB(80, 220, 255),  -- all cyan for CasualWing
+		},
+	},
+
+	-- ── Mobile buttons ──────────────────────────────────────
+	MobileJumpImage  = "rbxassetid://82148779521057",
+	MobilePunchImage = "rbxassetid://100936171116555",
+
+	NormalMin = 5,
+	PipSize   = 26,
+	PipGap    = 5,
+	PanelH    = 48,
+	PanelY    = 36,   -- distance from top — increase to move down, decrease to move up
+}
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SERVICES                               ║
+-- ╚══════════════════════════════════════════╝
+
+local Players      = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UIS          = game:GetService("UserInputService")
+
+local Player    = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SCREENGUI                              ║
+-- ╚══════════════════════════════════════════╝
+
+local ScreenGui          = Instance.new("ScreenGui")
+ScreenGui.Name           = "GameplayGUI"
+ScreenGui.ResetOnSpawn   = true
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.DisplayOrder   = 5
+ScreenGui.Parent         = PlayerGui
+
+local JumpUpdate         = Instance.new("BindableEvent")
+JumpUpdate.Name          = "JumpUpdate"
+JumpUpdate.Parent        = ScreenGui
+
+-- ╔══════════════════════════════════════════╗
+-- ║   HELPERS                                ║
+-- ╚══════════════════════════════════════════╝
+
+local function makeFrame(name, parent, size, pos, bg, alpha, radius)
+	local f = Instance.new("Frame")
+	f.Name = name; f.Size = size; f.Position = pos
+	f.BackgroundColor3 = bg or Color3.fromRGB(20,20,30)
+	f.BackgroundTransparency = alpha or 0.4
+	f.BorderSizePixel = 0; f.Parent = parent
+	Instance.new("UICorner", f).CornerRadius = UDim.new(0, radius or 12)
+	return f
+end
+
+local function makeImage(name, parent, size, pos, id)
+	local img = Instance.new("ImageLabel")
+	img.Name = name; img.Size = size; img.Position = pos
+	img.BackgroundTransparency = 1
+	img.Image = id; img.ScaleType = Enum.ScaleType.Fit
+	img.Parent = parent
+	return img
+end
+
+local panelStroke  -- reference so we can recolor it
+
+local function addStroke(p, thick, col, trans)
+	-- Remove old stroke first
+	local old = p:FindFirstChildOfClass("UIStroke")
+	if old then old:Destroy() end
+	local s = Instance.new("UIStroke")
+	s.Thickness = thick or 2; s.Color = col or Color3.new(1,1,1)
+	s.Transparency = trans or 0.6
+	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	s.Parent = p
+	return s
+end
+
+local function getPipColor(typeConf, index)
+	local c = typeConf.PipColors
+	return c[((index-1) % #c) + 1]
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SINGLE PIP PANEL                       ║
+-- ╚══════════════════════════════════════════╝
+
+local pipSize = CONFIG.PipSize
+local pipGap  = CONFIG.PipGap
+local panelH  = CONFIG.PanelH
+
+local JumpPanel    = nil
+local countLabel   = nil
+local pips         = {}
+local lastMax      = -1
+local lastType     = "Normal"
+
+local function buildPanel(maxCount, typeName)
+	if JumpPanel and JumpPanel.Parent then JumpPanel:Destroy() end
+	pips   = {}
+	lastMax = maxCount
+
+	local typeConf   = CONFIG[typeName] or CONFIG.Normal
+	local display    = math.min(maxCount, 10)
+	local newW       = display * (pipSize + pipGap) + 16
+
+	JumpPanel = makeFrame("JumpPanel", ScreenGui,
+		UDim2.new(0, newW, 0, panelH),
+		UDim2.new(0.5, -newW/2, 0, CONFIG.PanelY),
+		Color3.fromRGB(10, 10, 22), 0.45, 12
+	)
+	panelStroke = addStroke(JumpPanel, 1.5, typeConf.StrokeColor, 0.4)
+
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection       = Enum.FillDirection.Horizontal
+	layout.Padding             = UDim.new(0, pipGap)
+	layout.VerticalAlignment   = Enum.VerticalAlignment.Center
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.Parent              = JumpPanel
+
+	local pad = Instance.new("UIPadding")
+	pad.PaddingLeft  = UDim.new(0, 8)
+	pad.PaddingRight = UDim.new(0, 8)
+	pad.Parent       = JumpPanel
+
+	-- x20 overflow label
+	countLabel = Instance.new("TextLabel")
+	countLabel.Size = UDim2.new(0, 50, 1, 0)
+	countLabel.Position = UDim2.new(1, 4, 0, 0)
+	countLabel.BackgroundTransparency = 1
+	countLabel.TextColor3 = Color3.fromRGB(220, 220, 255)
+	countLabel.TextScaled = true
+	countLabel.Font = Enum.Font.GothamBold
+	countLabel.Text = ""
+	countLabel.Parent = JumpPanel
+
+	for i = 1, display do
+		local pip = makeImage("Pip_"..i, JumpPanel,
+			UDim2.new(0, pipSize, 0, pipSize),
+			UDim2.new(0, 0, 0, 0),
+			typeConf.PipFull
+		)
+		pip.ImageColor3 = getPipColor(typeConf, i)
+		pips[i] = pip
+	end
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SWAP PIP IMAGES (type switch)          ║
+-- ╚══════════════════════════════════════════╝
+
+local function swapPipImages(typeName, left, max)
+	local typeConf = CONFIG[typeName] or CONFIG.Normal
+
+	-- Recolor stroke
+	if panelStroke then
+		TweenService:Create(panelStroke,
+			TweenInfo.new(0.2), { Color = typeConf.StrokeColor }
+		):Play()
+	end
+
+	-- Swap pip images and colors
+	local display = math.min(max, 10)
+	for i = 1, display do
+		local pip = pips[i]; if not pip then continue end
+		pip.Image = (i <= left) and typeConf.PipFull or typeConf.PipEmpty
+		pip.ImageColor3 = getPipColor(typeConf, i)
+	end
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   UPDATE PIPS                            ║
+-- ╚══════════════════════════════════════════╝
+
+local function updatePips(left, max, typeName)
+	local typeConf = CONFIG[typeName] or CONFIG.Normal
+	local display  = math.min(max, 10)
+
+	countLabel.Text = max > 10 and ("x"..max) or ""
+
+	for i = 1, display do
+		local pip = pips[i]; if not pip then continue end
+		if i <= left then
+			pip.Image = typeConf.PipFull
+			pip.ImageColor3 = getPipColor(typeConf, i)
+			TweenService:Create(pip,
+				TweenInfo.new(0.1, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+				{ ImageTransparency = 0, Size = UDim2.new(0, pipSize, 0, pipSize) }
+			):Play()
+		else
+			pip.Image = typeConf.PipEmpty
+			TweenService:Create(pip,
+				TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+				{ ImageTransparency = 0.55, Size = UDim2.new(0, pipSize-6, 0, pipSize-6) }
+			):Play()
+		end
+	end
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   EDGE GLOW                              ║
+-- ╚══════════════════════════════════════════╝
+
+local glowImg = Instance.new("ImageLabel")
+glowImg.Size  = UDim2.new(1,0,1,0)
+glowImg.BackgroundTransparency = 1
+glowImg.Image = "rbxasset://textures/ui/VignetteBlur.png"
+glowImg.ImageTransparency = 1
+glowImg.ZIndex = 10
+glowImg.Parent = ScreenGui
+
+local function flashEdge(color, duration)
+	glowImg.ImageColor3 = color
+	TweenService:Create(glowImg, TweenInfo.new(0.12), { ImageTransparency = 0.3 }):Play()
+	task.delay(duration or 0.4, function()
+		TweenService:Create(glowImg, TweenInfo.new(0.35), { ImageTransparency = 1 }):Play()
+	end)
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   MOBILE BUTTONS                         ║
+-- ╚══════════════════════════════════════════╝
+
+local isMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
+
+local MobileJump = makeFrame("MobileJumpBtn", ScreenGui,
+	UDim2.new(0,90,0,90), UDim2.new(0.5,-45,1,-110),
+	Color3.fromRGB(30,30,50), 0.2, 45)
+addStroke(MobileJump, 2.5, Color3.fromRGB(150,200,255), 0.3)
+MobileJump.Visible = isMobile
+makeImage("Icon", MobileJump, UDim2.new(0.8,0,0.8,0), UDim2.new(0.1,0,0.1,0), CONFIG.MobileJumpImage)
+
+local JumpDetector = Instance.new("ImageButton")
+JumpDetector.Size  = UDim2.new(1,0,1,0)
+JumpDetector.BackgroundTransparency = 1
+JumpDetector.Parent = MobileJump
+
+local MobilePunch = makeFrame("MobilePunchBtn", ScreenGui,
+	UDim2.new(0,80,0,80), UDim2.new(1,-100,1,-100),
+	Color3.fromRGB(50,20,20), 0.2, 40)
+addStroke(MobilePunch, 2.5, Color3.fromRGB(255,120,120), 0.3)
+MobilePunch.Visible = isMobile
+makeImage("Icon", MobilePunch, UDim2.new(0.75,0,0.75,0), UDim2.new(0.125,0,0.125,0), CONFIG.MobilePunchImage)
+
+local PunchLabel = Instance.new("TextLabel")
+PunchLabel.Size     = UDim2.new(1,0,0,18)
+PunchLabel.Position = UDim2.new(0,0,1,-20)
+PunchLabel.BackgroundTransparency = 1
+PunchLabel.Text     = "HIT"
+PunchLabel.TextColor3 = Color3.fromRGB(255,180,180)
+PunchLabel.TextScaled = true
+PunchLabel.Font     = Enum.Font.GothamBold
+PunchLabel.Parent   = MobilePunch
+
+local PunchDetector = Instance.new("ImageButton")
+PunchDetector.Size  = UDim2.new(1,0,1,0)
+PunchDetector.BackgroundTransparency = 1
+PunchDetector.Parent = MobilePunch
+
+JumpDetector.MouseButton1Down:Connect(function()
+	local bf = PlayerGui:FindFirstChild("RequestJump")
+	if bf then bf:Invoke() end
+end)
+
+PunchDetector.MouseButton1Down:Connect(function()
+	local bf = PlayerGui:FindFirstChild("RequestPunch")
+	if bf then bf:Invoke() end
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   JUMP UPDATE HANDLER                    ║
+-- ╚══════════════════════════════════════════╝
+
+JumpUpdate.Event:Connect(function(normalLeft, normalMax, casualLeft, casualMax, jumpType)
+	local activeLeft = jumpType == "CasualWing" and casualLeft or normalLeft
+	local activeMax  = jumpType == "CasualWing" and casualMax  or normalMax
+
+	-- Rebuild panel if count changed OR type switched
+	if activeMax ~= lastMax or jumpType ~= lastType then
+		buildPanel(activeMax, jumpType)
+		lastMax  = activeMax
+		lastType = jumpType
+	end
+
+	updatePips(activeLeft, activeMax, jumpType)
+
+	-- Edge glow when out of jumps
+	local typeConf = CONFIG[jumpType] or CONFIG.Normal
+	if activeLeft == 0 then
+		flashEdge(typeConf.GlowColor, 0.5)
+	end
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   INIT                                   ║
+-- ╚══════════════════════════════════════════╝
+
+buildPanel(CONFIG.NormalMin, "Normal")
+updatePips(CONFIG.NormalMin, CONFIG.NormalMin, "Normal")
+
+print("[GameplayGUI] Loaded!")
