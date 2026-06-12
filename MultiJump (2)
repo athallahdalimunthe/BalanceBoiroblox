@@ -8,15 +8,21 @@ local CONFIG = {
 	JumpPower      = 55,
 	ExtraJumpPower = 50,
 	JumpSoundId    = "rbxassetid://138963217663286",
-	RingImageId    = "rbxassetid://82148779521057",
+	RingImageId    = "rbxassetid://73061577156450",
 	HitRange       = 20,
 	PunchCooldown  = 0.5,
 	CameraShakeAmount = 0.18,
 
-	CasualWingSoundId = "rbxassetid://139416774644323",
+	CasualWingSoundId = "rbxassetid://139959614274061",
 	CasualWingBursts  = 5,
-	CasualWingPower   = 192,
+	CasualWingPower   = 52,
 	CasualWingDelay   = 0.08,
+
+	-- Overhead image per jump type
+	OverheadImages = {
+		Normal     = "rbxassetid://73061577156450",        -- ← your Normal image ID
+		CasualWing = "rbxassetid://92242091997141",        -- ← your CasualWing image ID
+	},
 
 	JumpColors = {
 		Color3.fromRGB(255, 255, 255),
@@ -58,8 +64,71 @@ local RequestOrbHit    = Remotes:WaitForChild("RequestOrbHit", 10)
 local SetActiveType    = Remotes:WaitForChild("SetActiveType", 10)
 local ShieldStateChanged = Remotes:WaitForChild("ShieldStateChanged", 10)
 local ShieldAbsorbed   = Remotes:WaitForChild("ShieldAbsorbed", 10)
+local BroadcastType    = Remotes:WaitForChild("BroadcastType", 10)
 
 print("[MultiJump] Remotes OK")
+
+-- ╔══════════════════════════════════════════╗
+-- ║   OVERHEAD JUMP TYPE IMAGE               ║
+-- ╚══════════════════════════════════════════╝
+
+-- Build label on any player's HRP
+local function buildOverheadLabel(hrp, imageId)
+	if not hrp or not hrp.Parent then return nil, nil end
+	-- Remove existing
+	local old = hrp:FindFirstChild("JumpTypeLabel")
+	if old then old:Destroy() end
+	-- Also clean up old text-based labels from previous script versions
+	local oldNum = hrp:FindFirstChild("JumpLabel")
+	if oldNum then oldNum:Destroy() end
+
+	local bb              = Instance.new("BillboardGui")
+	bb.Name               = "JumpTypeLabel"
+	bb.Size               = UDim2.new(0, 40, 0, 40)
+	bb.StudsOffset        = Vector3.new(0, 3, 0)
+	bb.AlwaysOnTop        = false
+	bb.Adornee            = hrp
+	bb.Parent             = hrp
+
+	local img             = Instance.new("ImageLabel")
+	img.Size              = UDim2.new(1, 0, 1, 0)
+	img.BackgroundTransparency = 1
+	img.Image             = imageId
+	img.ScaleType         = Enum.ScaleType.Fit
+	img.Parent            = bb
+
+	return bb, img
+end
+
+-- Update our own overhead label and tell all other clients
+local ownLabel = nil
+local ownLabelImg = nil
+
+local function setOwnOverhead(typeName)
+	local imageId = CONFIG.OverheadImages[typeName] or CONFIG.OverheadImages.Normal
+	if not ownLabel or not ownLabel.Parent then
+		ownLabel, ownLabelImg = buildOverheadLabel(HRP, imageId)
+	else
+		ownLabelImg.Image = imageId
+	end
+	-- Tell server to broadcast our type to all other clients
+	if BroadcastType then
+		BroadcastType:FireServer(typeName)
+	end
+end
+
+-- Listen for other players' type changes
+if BroadcastType then
+	BroadcastType.OnClientEvent:Connect(function(targetPlayer, typeName)
+		if targetPlayer == Player then return end  -- we handle our own
+		local char = targetPlayer.Character
+		if not char then return end
+		local hrp  = char:FindFirstChild("HumanoidRootPart")
+		if not hrp then return end
+		local imageId = CONFIG.OverheadImages[typeName] or CONFIG.OverheadImages.Normal
+		buildOverheadLabel(hrp, imageId)
+	end)
+end
 
 -- ╔══════════════════════════════════════════╗
 -- ║   CHARACTER                              ║
@@ -324,11 +393,23 @@ SwitchJumpType.Name     = "SwitchJumpType"
 SwitchJumpType.Parent   = PlayerGui
 SwitchJumpType.OnInvoke = function(newType)
 	jumpType = newType
-	-- Tell server so hit logic knows victim's active type
 	SetActiveType:FireServer(newType)
+	setOwnOverhead(newType)   -- swap overhead image immediately
 	notifyGUI()
 	print("[MultiJump] Jump type →", jumpType)
 end
+
+-- Set initial overhead on spawn — wait until HRP exists
+task.spawn(function()
+	local hrp = Character:WaitForChild("HumanoidRootPart", 10)
+	if not hrp then return end
+	-- Remove any leftover labels from old script versions
+	for _, name in ipairs({"JumpTypeLabel","JumpLabel","ProtectedLabel"}) do
+		local old = hrp:FindFirstChild(name)
+		if old then old:Destroy() end
+	end
+	setOwnOverhead(jumpType)
+end)
 
 -- ╔══════════════════════════════════════════╗
 -- ║   CASUAL WING BURST                      ║
