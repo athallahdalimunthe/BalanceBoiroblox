@@ -9,8 +9,8 @@
 local CONFIG = {
 	-- ── Pip images per type ─────────────────────────────────
 	Normal = {
-		PipFull  = "rbxassetid://73061577156450",   -- ← swap
-		PipEmpty = "rbxassetid://73061577156450",  -- ← swap
+		PipFull  = "rbxassetid://127455537382505",   -- ← swap
+		PipEmpty = "rbxassetid://127455537382505",  -- ← swap
 		StrokeColor = Color3.fromRGB(180, 180, 255),
 		GlowColor   = Color3.fromRGB(255,  60, 200),
 		PipColors = {
@@ -25,8 +25,8 @@ local CONFIG = {
 		},
 	},
 	CasualWing = {
-		PipFull  = "rbxassetid://91638214000777",   -- ← swap
-		PipEmpty = "rbxassetid://91638214000777",  -- ← swap
+		PipFull  = "rbxassetid://92242091997141",   -- ← swap
+		PipEmpty = "rbxassetid://92242091997141",  -- ← swap
 		StrokeColor = Color3.fromRGB(80, 220, 255),
 		GlowColor   = Color3.fromRGB(80, 220, 255),
 		PipColors = {
@@ -35,8 +35,8 @@ local CONFIG = {
 	},
 
 	-- ── Mobile buttons ──────────────────────────────────────
-	MobileJumpImage  = "rbxassetid://82148779521057",
-	MobilePunchImage = "rbxassetid://100936171116555",
+	MobileJumpImage  = "rbxassetid://138046969562549",
+	MobilePunchImage = "rbxassetid://85587516427656",
 
 	NormalMin = 5,
 	PipSize   = 26,
@@ -250,45 +250,106 @@ local function flashEdge(color, duration)
 end
 
 -- ╔══════════════════════════════════════════╗
--- ║   MOBILE BUTTONS                         ║
+-- ║   MOBILE TOOLBAR  (bottom center)        ║
+-- ║   Visible on mobile only                 ║
 -- ╚══════════════════════════════════════════╝
 
 local isMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
 
-local MobileJump = makeFrame("MobileJumpBtn", ScreenGui,
-	UDim2.new(0,90,0,90), UDim2.new(0.5,-45,1,-110),
-	Color3.fromRGB(30,30,50), 0.2, 45)
-addStroke(MobileJump, 2.5, Color3.fromRGB(150,200,255), 0.3)
-MobileJump.Visible = isMobile
-makeImage("Icon", MobileJump, UDim2.new(0.8,0,0.8,0), UDim2.new(0.1,0,0.1,0), CONFIG.MobileJumpImage)
+-- Toolbar background bar
+local Toolbar = makeFrame("Toolbar", ScreenGui,
+	UDim2.new(0, 220, 0, 80),
+	UDim2.new(0.5, -110, 1, -100),
+	Color3.fromRGB(15, 15, 30), 0.25, 40
+)
+addStroke(Toolbar, 2, Color3.fromRGB(120, 150, 255), 0.4)
+Toolbar.Visible = isMobile
 
-local JumpDetector = Instance.new("ImageButton")
-JumpDetector.Size  = UDim2.new(1,0,1,0)
-JumpDetector.BackgroundTransparency = 1
-JumpDetector.Parent = MobileJump
+-- Layout for buttons inside toolbar
+local toolbarLayout = Instance.new("UIListLayout")
+toolbarLayout.FillDirection       = Enum.FillDirection.Horizontal
+toolbarLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+toolbarLayout.VerticalAlignment   = Enum.VerticalAlignment.Center
+toolbarLayout.Padding             = UDim.new(0, 16)
+toolbarLayout.Parent              = Toolbar
 
-local MobilePunch = makeFrame("MobilePunchBtn", ScreenGui,
-	UDim2.new(0,80,0,80), UDim2.new(1,-100,1,-100),
-	Color3.fromRGB(50,20,20), 0.2, 40)
-addStroke(MobilePunch, 2.5, Color3.fromRGB(255,120,120), 0.3)
-MobilePunch.Visible = isMobile
-makeImage("Icon", MobilePunch, UDim2.new(0.75,0,0.75,0), UDim2.new(0.125,0,0.125,0), CONFIG.MobilePunchImage)
+local toolbarPad = Instance.new("UIPadding")
+toolbarPad.PaddingLeft  = UDim.new(0, 16)
+toolbarPad.PaddingRight = UDim.new(0, 16)
+toolbarPad.Parent       = Toolbar
 
-local PunchLabel = Instance.new("TextLabel")
-PunchLabel.Size     = UDim2.new(1,0,0,18)
-PunchLabel.Position = UDim2.new(0,0,1,-20)
-PunchLabel.BackgroundTransparency = 1
-PunchLabel.Text     = "HIT"
-PunchLabel.TextColor3 = Color3.fromRGB(255,180,180)
-PunchLabel.TextScaled = true
-PunchLabel.Font     = Enum.Font.GothamBold
-PunchLabel.Parent   = MobilePunch
+-- ── PUNCH button (left) ──────────────────────────────────────
+local PunchBtn = makeFrame("PunchBtn", Toolbar,
+	UDim2.new(0, 64, 0, 64),
+	UDim2.new(0, 0, 0, 0),
+	Color3.fromRGB(50, 20, 20), 0.2, 32
+)
+addStroke(PunchBtn, 2, Color3.fromRGB(255, 100, 100), 0.4)
+makeImage("Icon", PunchBtn,
+	UDim2.new(0.72, 0, 0.72, 0), UDim2.new(0.14, 0, 0.05, 0),
+	CONFIG.MobilePunchImage)
+
+local PunchLbl = Instance.new("TextLabel")
+PunchLbl.Size  = UDim2.new(1, 0, 0, 16)
+PunchLbl.Position = UDim2.new(0, 0, 1, -18)
+PunchLbl.BackgroundTransparency = 1
+PunchLbl.Text  = "HIT"
+PunchLbl.TextColor3 = Color3.fromRGB(255, 160, 160)
+PunchLbl.TextScaled = true
+PunchLbl.Font  = Enum.Font.GothamBold
+PunchLbl.Parent = PunchBtn
 
 local PunchDetector = Instance.new("ImageButton")
-PunchDetector.Size  = UDim2.new(1,0,1,0)
+PunchDetector.Size  = UDim2.new(1, 0, 1, 0)
 PunchDetector.BackgroundTransparency = 1
-PunchDetector.Parent = MobilePunch
+PunchDetector.Parent = PunchBtn
 
+-- ── JUMP button (center, bigger) ─────────────────────────────
+local JumpBtn = makeFrame("JumpBtn", Toolbar,
+	UDim2.new(0, 76, 0, 76),
+	UDim2.new(0, 0, 0, 0),
+	Color3.fromRGB(20, 40, 80), 0.15, 38
+)
+addStroke(JumpBtn, 2.5, Color3.fromRGB(120, 180, 255), 0.3)
+makeImage("Icon", JumpBtn,
+	UDim2.new(0.75, 0, 0.75, 0), UDim2.new(0.125, 0, 0.05, 0),
+	CONFIG.MobileJumpImage)
+
+local JumpLbl = Instance.new("TextLabel")
+JumpLbl.Size  = UDim2.new(1, 0, 0, 16)
+JumpLbl.Position = UDim2.new(0, 0, 1, -18)
+JumpLbl.BackgroundTransparency = 1
+JumpLbl.Text  = "JUMP"
+JumpLbl.TextColor3 = Color3.fromRGB(160, 200, 255)
+JumpLbl.TextScaled = true
+JumpLbl.Font  = Enum.Font.GothamBold
+JumpLbl.Parent = JumpBtn
+
+local JumpDetector = Instance.new("ImageButton")
+JumpDetector.Size  = UDim2.new(1, 0, 1, 0)
+JumpDetector.BackgroundTransparency = 1
+JumpDetector.Parent = JumpBtn
+
+-- ── Button press animations ───────────────────────────────────
+local function pressAnim(btn, detector)
+	detector.MouseButton1Down:Connect(function()
+		TweenService:Create(btn,
+			TweenInfo.new(0.07, Enum.EasingStyle.Quad),
+			{ Size = UDim2.new(0, btn.Size.X.Offset - 8, 0, btn.Size.Y.Offset - 8) }
+		):Play()
+	end)
+	detector.MouseButton1Up:Connect(function()
+		TweenService:Create(btn,
+			TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+			{ Size = UDim2.new(0, btn.Size.X.Offset + 8, 0, btn.Size.Y.Offset + 8) }
+		):Play()
+	end)
+end
+
+pressAnim(JumpBtn, JumpDetector)
+pressAnim(PunchBtn, PunchDetector)
+
+-- ── Button actions ────────────────────────────────────────────
 JumpDetector.MouseButton1Down:Connect(function()
 	local bf = PlayerGui:FindFirstChild("RequestJump")
 	if bf then bf:Invoke() end
