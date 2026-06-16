@@ -259,7 +259,7 @@ local isMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
 -- Toolbar background bar
 local Toolbar = makeFrame("Toolbar", ScreenGui,
 	UDim2.new(0, 220, 0, 80),
-	UDim2.new(0.5, -110, 1, -100),
+	UDim2.new(1, -230, 1, -100),
 	Color3.fromRGB(15, 15, 30), 0.25, 40
 )
 addStroke(Toolbar, 2, Color3.fromRGB(120, 150, 255), 0.4)
