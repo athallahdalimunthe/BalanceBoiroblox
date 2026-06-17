@@ -1,394 +1,584 @@
 -- ============================================================
---  GameplayGUI  LocalScript  (Balance Boi)
---  Place inside: StarterGui
--- ============================================================
---  One pip bar, top-center.
---  Pip image + bar color changes when you switch jump type.
+--  MultiJump  LocalScript  (Balance Boi)  v5
+--  Place inside: StarterPlayer > StarterCharacterScripts
 -- ============================================================
 
 local CONFIG = {
-	-- ── Pip images per type ─────────────────────────────────
-	Normal = {
-		PipFull  = "rbxassetid://127455537382505",   -- ← swap
-		PipEmpty = "rbxassetid://127455537382505",  -- ← swap
-		StrokeColor = Color3.fromRGB(180, 180, 255),
-		GlowColor   = Color3.fromRGB(255,  60, 200),
-		PipColors = {
-			Color3.fromRGB(255, 255, 255),
-			Color3.fromRGB(100, 220, 255),
-			Color3.fromRGB(120, 255, 120),
-			Color3.fromRGB(255, 200,  60),
-			Color3.fromRGB(255,  80, 200),
-			Color3.fromRGB(255, 120,  60),
-			Color3.fromRGB(200,  80, 255),
-			Color3.fromRGB(255, 255,  60),
-		},
-	},
-	CasualWing = {
-		PipFull  = "rbxassetid://92242091997141",   -- ← swap
-		PipEmpty = "rbxassetid://92242091997141",  -- ← swap
-		StrokeColor = Color3.fromRGB(80, 220, 255),
-		GlowColor   = Color3.fromRGB(80, 220, 255),
-		PipColors = {
-			Color3.fromRGB(80, 220, 255),  -- all cyan for CasualWing
-		},
+	NormalMin      = 5,
+	JumpPower      = 55,
+	ExtraJumpPower = 50,
+	JumpSoundId        = "rbxassetid://130315151473286",   -- Normal multi-jump sound
+	DefaultJumpSoundId = "rbxassetid://107182839359755",  -- ← basic ground jump (shield/CasualWing mode)
+	RingImageId    = "rbxassetid://138046969562549",
+	HitRange       = 20,
+	PunchCooldown  = 0.5,
+	CameraShakeAmount = 0.18,
+
+	CasualWingSoundId = "rbxassetid://107182839359755",
+	CasualWingBursts  = 5,
+	CasualWingPower   = 52,
+	CasualWingDelay   = 0.08,
+
+	-- Overhead image per jump type
+	OverheadImages = {
+		Normal     = "rbxassetid://73061577156450",        -- ← your Normal image ID
+		CasualWing = "rbxassetid://92242091997141",        -- ← your CasualWing image ID
 	},
 
-	-- ── Mobile buttons ──────────────────────────────────────
-	MobileJumpImage  = "rbxassetid://138046969562549",
-	MobilePunchImage = "rbxassetid://85587516427656",
-
-	NormalMin = 5,
-	PipSize   = 26,
-	PipGap    = 5,
-	PanelH    = 48,
-	PanelY    = 36,   -- distance from top — increase to move down, decrease to move up
+	JumpColors = {
+		Color3.fromRGB(255, 255, 255),
+		Color3.fromRGB(100, 220, 255),
+		Color3.fromRGB(120, 255, 120),
+		Color3.fromRGB(255, 200,  60),
+		Color3.fromRGB(255,  80, 200),
+		Color3.fromRGB(255, 120,  60),
+		Color3.fromRGB(200,  80, 255),
+		Color3.fromRGB(255, 255,  60),
+	},
 }
 
--- ╔══════════════════════════════════════════╗
--- ║   SERVICES                               ║
--- ╚══════════════════════════════════════════╝
-
-local Players      = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local UIS          = game:GetService("UserInputService")
+local Players           = game:GetService("Players")
+local UserInputService  = game:GetService("UserInputService")
+local TweenService      = game:GetService("TweenService")
+local RunService        = game:GetService("RunService")
+local Debris            = game:GetService("Debris")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Player    = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
+local Camera    = workspace.CurrentCamera
 
 -- ╔══════════════════════════════════════════╗
--- ║   SCREENGUI                              ║
+-- ║   REMOTES                                ║
 -- ╚══════════════════════════════════════════╝
 
-local ScreenGui          = Instance.new("ScreenGui")
-ScreenGui.Name           = "GameplayGUI"
-ScreenGui.ResetOnSpawn   = true
-ScreenGui.IgnoreGuiInset = true
-ScreenGui.DisplayOrder   = 5
-ScreenGui.Parent         = PlayerGui
+local Remotes = ReplicatedStorage:WaitForChild("JumpRemotes", 15)
+if not Remotes then
+	warn("[MultiJump] JumpRemotes not found!")
+	return
+end
 
-local JumpUpdate         = Instance.new("BindableEvent")
-JumpUpdate.Name          = "JumpUpdate"
-JumpUpdate.Parent        = ScreenGui
+local RequestHit       = Remotes:WaitForChild("RequestHit", 10)
+local JumpCountChanged = Remotes:WaitForChild("JumpCountChanged", 10)
+local GotHit           = Remotes:WaitForChild("GotHit", 10)
+local RequestOrbHit    = Remotes:WaitForChild("RequestOrbHit", 10)
+local SetActiveType    = Remotes:WaitForChild("SetActiveType", 10)
+local ShieldStateChanged = Remotes:WaitForChild("ShieldStateChanged", 10)
+local ShieldAbsorbed   = Remotes:WaitForChild("ShieldAbsorbed", 10)
+local BroadcastType    = Remotes:WaitForChild("BroadcastType", 10)
+
+print("[MultiJump] Remotes OK")
 
 -- ╔══════════════════════════════════════════╗
--- ║   HELPERS                                ║
+-- ║   OVERHEAD JUMP TYPE IMAGE               ║
 -- ╚══════════════════════════════════════════╝
 
-local function makeFrame(name, parent, size, pos, bg, alpha, radius)
-	local f = Instance.new("Frame")
-	f.Name = name; f.Size = size; f.Position = pos
-	f.BackgroundColor3 = bg or Color3.fromRGB(20,20,30)
-	f.BackgroundTransparency = alpha or 0.4
-	f.BorderSizePixel = 0; f.Parent = parent
-	Instance.new("UICorner", f).CornerRadius = UDim.new(0, radius or 12)
-	return f
-end
-
-local function makeImage(name, parent, size, pos, id)
-	local img = Instance.new("ImageLabel")
-	img.Name = name; img.Size = size; img.Position = pos
-	img.BackgroundTransparency = 1
-	img.Image = id; img.ScaleType = Enum.ScaleType.Fit
-	img.Parent = parent
-	return img
-end
-
-local panelStroke  -- reference so we can recolor it
-
-local function addStroke(p, thick, col, trans)
-	-- Remove old stroke first
-	local old = p:FindFirstChildOfClass("UIStroke")
+-- Build label on any player's HRP
+local function buildOverheadLabel(hrp, imageId)
+	if not hrp or not hrp.Parent then return nil, nil end
+	-- Remove existing
+	local old = hrp:FindFirstChild("JumpTypeLabel")
 	if old then old:Destroy() end
-	local s = Instance.new("UIStroke")
-	s.Thickness = thick or 2; s.Color = col or Color3.new(1,1,1)
-	s.Transparency = trans or 0.6
-	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-	s.Parent = p
+	-- Also clean up old text-based labels from previous script versions
+	local oldNum = hrp:FindFirstChild("JumpLabel")
+	if oldNum then oldNum:Destroy() end
+
+	local bb              = Instance.new("BillboardGui")
+	bb.Name               = "JumpTypeLabel"
+	bb.Size               = UDim2.new(0, 40, 0, 40)
+	bb.StudsOffset        = Vector3.new(0, 3, 0)
+	bb.AlwaysOnTop        = false
+	bb.Adornee            = hrp
+	bb.Parent             = hrp
+
+	local img             = Instance.new("ImageLabel")
+	img.Size              = UDim2.new(1, 0, 1, 0)
+	img.BackgroundTransparency = 1
+	img.Image             = imageId
+	img.ScaleType         = Enum.ScaleType.Fit
+	img.Parent            = bb
+
+	return bb, img
+end
+
+-- Update our own overhead label and tell all other clients
+local ownLabel = nil
+local ownLabelImg = nil
+
+local function setOwnOverhead(typeName)
+	local imageId = CONFIG.OverheadImages[typeName] or CONFIG.OverheadImages.Normal
+	if not ownLabel or not ownLabel.Parent then
+		ownLabel, ownLabelImg = buildOverheadLabel(HRP, imageId)
+	else
+		ownLabelImg.Image = imageId
+	end
+	-- Tell server to broadcast our type to all other clients
+	if BroadcastType then
+		BroadcastType:FireServer(typeName)
+	end
+end
+
+-- Listen for other players' type changes
+if BroadcastType then
+	BroadcastType.OnClientEvent:Connect(function(targetPlayer, typeName)
+		if targetPlayer == Player then return end  -- we handle our own
+		local char = targetPlayer.Character
+		if not char then return end
+		local hrp  = char:FindFirstChild("HumanoidRootPart")
+		if not hrp then return end
+		local imageId = CONFIG.OverheadImages[typeName] or CONFIG.OverheadImages.Normal
+		buildOverheadLabel(hrp, imageId)
+	end)
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   CHARACTER                              ║
+-- ╚══════════════════════════════════════════╝
+
+local Character    = script.Parent
+local Humanoid     = Character:WaitForChild("Humanoid")
+local HRP          = Character:WaitForChild("HumanoidRootPart")
+
+-- ╔══════════════════════════════════════════╗
+-- ║   STATE                                  ║
+-- ╚══════════════════════════════════════════╝
+
+local normalMax    = CONFIG.NormalMin
+local normalLeft   = normalMax
+local casualMax    = 0
+local casualLeft   = 0
+local jumpType     = "Normal"   -- "Normal" or "CasualWing"
+local isGrounded   = true
+local jumpCooldown = false
+local punchCooldown = false
+local isShielded   = false
+local winging      = false
+
+-- ╔══════════════════════════════════════════╗
+-- ║   CLEANUP PREVIOUS LIFE                  ║
+-- ╚══════════════════════════════════════════╝
+
+for _, name in ipairs({"JumpFlash","RequestJump","RequestPunch","SwitchJumpType"}) do
+	local old = PlayerGui:FindFirstChild(name)
+	if old then old:Destroy() end
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SCREEN FLASH                           ║
+-- ╚══════════════════════════════════════════╝
+
+local flashGui           = Instance.new("ScreenGui")
+flashGui.Name            = "JumpFlash"
+flashGui.ResetOnSpawn    = false
+flashGui.IgnoreGuiInset  = true
+flashGui.Parent          = PlayerGui
+
+local flashFrame         = Instance.new("Frame")
+flashFrame.Size          = UDim2.new(1,0,1,0)
+flashFrame.BackgroundTransparency = 1
+flashFrame.BorderSizePixel = 0
+flashFrame.Parent        = flashGui
+
+local function screenFlash(color)
+	flashFrame.BackgroundColor3 = color
+	flashFrame.BackgroundTransparency = 0.55
+	TweenService:Create(flashFrame,
+		TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ BackgroundTransparency = 1 }
+	):Play()
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SOUNDS                                 ║
+-- ╚══════════════════════════════════════════╝
+
+local function makeSound(id, vol, pitch)
+	local s = Instance.new("Sound")
+	s.SoundId = id; s.Volume = vol or 0.8
+	if pitch then s.PlaybackSpeed = pitch end
+	s.Parent = HRP
 	return s
 end
 
-local function getPipColor(typeConf, index)
-	local c = typeConf.PipColors
+local jumpSound       = makeSound(CONFIG.JumpSoundId, 0.7)
+local defaultJumpSound = makeSound(CONFIG.DefaultJumpSoundId, 0.7)
+local stealSound      = makeSound("rbxassetid://133177738208654", 1)
+local lostSound       = makeSound(CONFIG.JumpSoundId, 0.8, 0.6)
+local shieldBlockSnd  = makeSound("rbxassetid://134739191091519", 1)
+local casualWingSound = makeSound(CONFIG.CasualWingSoundId, 0.9)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   RING BURST                             ║
+-- ╚══════════════════════════════════════════╝
+
+local function getColor(index)
+	local c = CONFIG.JumpColors
 	return c[((index-1) % #c) + 1]
 end
 
+local function spawnRing(jumpIndex, color)
+	color = color or getColor(jumpIndex)
+	local att = Instance.new("Attachment")
+	att.Position = Vector3.new(0, -2.5, 0)
+	att.Parent   = HRP
+
+	local bb  = Instance.new("BillboardGui")
+	bb.Size   = UDim2.new(0,10,0,10)
+	bb.Adornee = att; bb.Parent = workspace
+
+	local img = Instance.new("ImageLabel")
+	img.Size  = UDim2.new(1,0,1,0)
+	img.BackgroundTransparency = 1
+	img.Image = CONFIG.RingImageId
+	img.ImageColor3 = color
+	img.Parent = bb
+
+	TweenService:Create(bb, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Size = UDim2.new(0,60,0,60) }):Play()
+	TweenService:Create(img, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ ImageTransparency = 1 }):Play()
+
+	Debris:AddItem(bb, 0.5); Debris:AddItem(att, 0.5)
+end
+
 -- ╔══════════════════════════════════════════╗
--- ║   SINGLE PIP PANEL                       ║
+-- ║   CAMERA SHAKE                           ║
 -- ╚══════════════════════════════════════════╝
 
-local pipSize = CONFIG.PipSize
-local pipGap  = CONFIG.PipGap
-local panelH  = CONFIG.PanelH
+local shakeTime = 0; local shakeMag = 0
 
-local JumpPanel    = nil
-local countLabel   = nil
-local pips         = {}
-local lastMax      = -1
-local lastType     = "Normal"
+local shakeConn = RunService.RenderStepped:Connect(function(dt)
+	if shakeTime > 0 then
+		shakeTime -= dt
+		Camera.CFrame = Camera.CFrame * CFrame.new(
+			math.random(-100,100)/100 * shakeMag,
+			math.random(-100,100)/100 * shakeMag, 0)
+	end
+end)
 
-local function buildPanel(maxCount, typeName)
-	if JumpPanel and JumpPanel.Parent then JumpPanel:Destroy() end
-	pips   = {}
-	lastMax = maxCount
+Character.AncestryChanged:Connect(function()
+	if not Character:IsDescendantOf(workspace) then shakeConn:Disconnect() end
+end)
 
-	local typeConf   = CONFIG[typeName] or CONFIG.Normal
-	local display    = math.min(maxCount, 10)
-	local newW       = display * (pipSize + pipGap) + 16
+local function shakeCamera(mag, dur) shakeMag = mag; shakeTime = dur end
 
-	JumpPanel = makeFrame("JumpPanel", ScreenGui,
-		UDim2.new(0, newW, 0, panelH),
-		UDim2.new(0.5, -newW/2, 0, CONFIG.PanelY),
-		Color3.fromRGB(10, 10, 22), 0.45, 12
-	)
-	panelStroke = addStroke(JumpPanel, 1.5, typeConf.StrokeColor, 0.4)
+-- ╔══════════════════════════════════════════╗
+-- ║   NOTIFY GUI                             ║
+-- ╚══════════════════════════════════════════╝
 
-	local layout = Instance.new("UIListLayout")
-	layout.FillDirection       = Enum.FillDirection.Horizontal
-	layout.Padding             = UDim.new(0, pipGap)
-	layout.VerticalAlignment   = Enum.VerticalAlignment.Center
-	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	layout.Parent              = JumpPanel
+local function notifyGUI()
+	local gui = PlayerGui:FindFirstChild("GameplayGUI")
+	if not gui then return end
+	local ev = gui:FindFirstChild("JumpUpdate")
+	if ev then ev:Fire(normalLeft, normalMax, casualLeft, casualMax, jumpType) end
+end
 
-	local pad = Instance.new("UIPadding")
-	pad.PaddingLeft  = UDim.new(0, 8)
-	pad.PaddingRight = UDim.new(0, 8)
-	pad.Parent       = JumpPanel
+-- ╔══════════════════════════════════════════╗
+-- ║   GROUND DETECTION                       ║
+-- ╚══════════════════════════════════════════╝
 
-	-- x20 overflow label
-	countLabel = Instance.new("TextLabel")
-	countLabel.Size = UDim2.new(0, 50, 1, 0)
-	countLabel.Position = UDim2.new(1, 4, 0, 0)
-	countLabel.BackgroundTransparency = 1
-	countLabel.TextColor3 = Color3.fromRGB(220, 220, 255)
-	countLabel.TextScaled = true
-	countLabel.Font = Enum.Font.GothamBold
-	countLabel.Text = ""
-	countLabel.Parent = JumpPanel
+Humanoid.StateChanged:Connect(function(_, new)
+	if new == Enum.HumanoidStateType.Landed
+		or new == Enum.HumanoidStateType.Running
+		or new == Enum.HumanoidStateType.RunningNoPhysics then
+		normalLeft = normalMax
+		casualLeft = casualMax
+		isGrounded = true
+		notifyGUI()
+	elseif new == Enum.HumanoidStateType.Freefall
+		or     new == Enum.HumanoidStateType.Jumping then
+		isGrounded = false
+	end
+end)
 
-	for i = 1, display do
-		local pip = makeImage("Pip_"..i, JumpPanel,
-			UDim2.new(0, pipSize, 0, pipSize),
-			UDim2.new(0, 0, 0, 0),
-			typeConf.PipFull
+-- ╔══════════════════════════════════════════╗
+-- ║   SERVER → CLIENT: counts updated        ║
+-- ╚══════════════════════════════════════════╝
+
+JumpCountChanged.OnClientEvent:Connect(function(newNormal, newCasual)
+	print("[MultiJump] Counts: Normal=", newNormal, "CasualWing=", newCasual)
+	local gainedNormal = newNormal > normalMax
+	local gainedCasual = newCasual > casualMax
+
+	normalMax  = newNormal
+	casualMax  = newCasual
+	normalLeft = math.min(normalLeft, normalMax)
+	casualLeft = math.min(casualLeft, casualMax)
+	notifyGUI()
+
+	if gainedNormal or gainedCasual then
+		screenFlash(Color3.fromRGB(80, 255, 120))
+		stealSound:Play()
+	end
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   GOT HIT                                ║
+-- ╚══════════════════════════════════════════╝
+
+GotHit.OnClientEvent:Connect(function(attackerName)
+	print("[MultiJump] Got hit by:", attackerName)
+	screenFlash(Color3.fromRGB(255, 60, 60))
+	shakeCamera(0.35, 0.18)
+	lostSound:Play()
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   SHIELD STATE                           ║
+-- ╚══════════════════════════════════════════╝
+
+if ShieldStateChanged then
+	ShieldStateChanged.OnClientEvent:Connect(function(targetPlayer, state, _value)
+		if targetPlayer == Player then
+			if state == "on" then isShielded = true
+			elseif state == "off" then isShielded = false
+			elseif state == "blocked" then
+				screenFlash(Color3.fromRGB(80, 160, 255))
+				shakeCamera(0.1, 0.06)
+				shieldBlockSnd:Play()
+			end
+		end
+
+		-- Protected label overhead
+		local targetChar = targetPlayer.Character
+		if not targetChar then return end
+		local targetHRP  = targetChar:FindFirstChild("HumanoidRootPart")
+		if not targetHRP then return end
+		local existing = targetHRP:FindFirstChild("ProtectedLabel")
+		if existing then existing:Destroy() end
+
+		if state == "on" then
+			local bb  = Instance.new("BillboardGui")
+			bb.Name   = "ProtectedLabel"
+			bb.Size   = UDim2.new(0,120,0,30)
+			bb.StudsOffset = Vector3.new(0,3.5,0)
+			bb.Adornee = targetHRP; bb.Parent = targetHRP
+			local bg  = Instance.new("Frame")
+			bg.Size   = UDim2.new(1,0,1,0)
+			bg.BackgroundColor3 = Color3.fromRGB(20,60,140)
+			bg.BackgroundTransparency = 0.3
+			bg.BorderSizePixel = 0; bg.Parent = bb
+			Instance.new("UICorner", bg).CornerRadius = UDim.new(0,8)
+			local lbl = Instance.new("TextLabel")
+			lbl.Size  = UDim2.new(1,0,1,0)
+			lbl.BackgroundTransparency = 1
+			lbl.Text  = "🛡️ Protected"
+			lbl.TextColor3 = Color3.fromRGB(180,220,255)
+			lbl.TextScaled = true
+			lbl.Font  = Enum.Font.GothamBold
+			lbl.Parent = bg
+			task.spawn(function()
+				while bb and bb.Parent do
+					TweenService:Create(lbl, TweenInfo.new(0.6,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut), {TextTransparency=0.4}):Play()
+					task.wait(0.6)
+					TweenService:Create(lbl, TweenInfo.new(0.6,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut), {TextTransparency=0}):Play()
+					task.wait(0.6)
+				end
+			end)
+		end
+	end)
+end
+
+if ShieldAbsorbed then
+	ShieldAbsorbed.OnClientEvent:Connect(function()
+		shieldBlockSnd:Play()
+		screenFlash(Color3.fromRGB(80,160,255))
+	end)
+end
+
+-- ╔══════════════════════════════════════════╗
+-- ║   JUMP TYPE SWITCHER  (from GUI)         ║
+-- ╚══════════════════════════════════════════╝
+
+local SwitchJumpType    = Instance.new("BindableFunction")
+SwitchJumpType.Name     = "SwitchJumpType"
+SwitchJumpType.Parent   = PlayerGui
+SwitchJumpType.OnInvoke = function(newType)
+	jumpType = newType
+	SetActiveType:FireServer(newType)
+	setOwnOverhead(newType)   -- swap overhead image immediately
+	notifyGUI()
+	print("[MultiJump] Jump type →", jumpType)
+end
+
+-- Set initial overhead on spawn — wait until HRP exists
+task.spawn(function()
+	local hrp = Character:WaitForChild("HumanoidRootPart", 10)
+	if not hrp then return end
+	-- Remove any leftover labels from old script versions
+	for _, name in ipairs({"JumpTypeLabel","JumpLabel","ProtectedLabel"}) do
+		local old = hrp:FindFirstChild(name)
+		if old then old:Destroy() end
+	end
+	setOwnOverhead(jumpType)
+end)
+
+-- ╔══════════════════════════════════════════╗
+-- ║   CASUAL WING BURST                      ║
+-- ╚══════════════════════════════════════════╝
+
+local function doCasualWingBurst()
+	if casualLeft <= 0 then return end
+	if winging then return end
+	winging    = true
+	casualLeft -= 1
+	notifyGUI()
+	casualWingSound:Play()
+
+	local cyanColor = Color3.fromRGB(80, 220, 255)
+	for i = 1, CONFIG.CasualWingBursts do
+		if Humanoid.Health <= 0 then break end
+		HRP.AssemblyLinearVelocity = Vector3.new(
+			HRP.AssemblyLinearVelocity.X,
+			CONFIG.CasualWingPower,
+			HRP.AssemblyLinearVelocity.Z
 		)
-		pip.ImageColor3 = getPipColor(typeConf, i)
-		pips[i] = pip
+		Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		spawnRing(i, cyanColor)
+		screenFlash(cyanColor)
+		if i >= 3 then shakeCamera(CONFIG.CameraShakeAmount * i * 0.5, 0.06) end
+		task.wait(CONFIG.CasualWingDelay)
 	end
+
+	winging    = false
+	isGrounded = false
 end
 
 -- ╔══════════════════════════════════════════╗
--- ║   SWAP PIP IMAGES (type switch)          ║
+-- ║   CORE JUMP                              ║
 -- ╚══════════════════════════════════════════╝
 
-local function swapPipImages(typeName, left, max)
-	local typeConf = CONFIG[typeName] or CONFIG.Normal
+local function doJump()
+	if jumpCooldown then return end
+	if Humanoid.Health <= 0 then return end
+	if isShielded and not isGrounded then return end
+	if winging then return end
 
-	-- Recolor stroke
-	if panelStroke then
-		TweenService:Create(panelStroke,
-			TweenInfo.new(0.2), { Color = typeConf.StrokeColor }
-		):Play()
+	-- CasualWing air burst
+	if jumpType == "CasualWing" and not isGrounded then
+		if casualLeft <= 0 then return end
+		jumpCooldown = true
+		task.delay(0.3, function() jumpCooldown = false end)
+		task.spawn(doCasualWingBurst)
+		return
 	end
 
-	-- Swap pip images and colors
-	local display = math.min(max, 10)
-	for i = 1, display do
-		local pip = pips[i]; if not pip then continue end
-		pip.Image = (i <= left) and typeConf.PipFull or typeConf.PipEmpty
-		pip.ImageColor3 = getPipColor(typeConf, i)
+	-- Normal jump
+	if normalLeft <= 0 then return end
+	local currentJump = (normalMax - normalLeft) + 1
+
+	jumpCooldown = true
+	task.delay(0.12, function() jumpCooldown = false end)
+
+	if not isGrounded then
+		local power = math.max(CONFIG.ExtraJumpPower - (currentJump - 2) * 2, 35)
+		HRP.AssemblyLinearVelocity = Vector3.new(
+			HRP.AssemblyLinearVelocity.X, power, HRP.AssemblyLinearVelocity.Z)
+		Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+	else
+		Humanoid.JumpPower = CONFIG.JumpPower
+		Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		isGrounded = false
 	end
+
+	normalLeft -= 1
+	spawnRing(currentJump)
+
+	-- First ground jump or jumping while in CasualWing mode = default sound
+	-- Air jumps in Normal mode = Normal jump sound
+	if isGrounded or jumpType == "CasualWing" then
+		defaultJumpSound:Play()
+	else
+		jumpSound:Play()
+	end
+
+	if currentJump >= 2 then
+		screenFlash(getColor(currentJump))
+		shakeCamera(CONFIG.CameraShakeAmount * (currentJump - 1), 0.1)
+	end
+
+	notifyGUI()
 end
 
 -- ╔══════════════════════════════════════════╗
--- ║   UPDATE PIPS                            ║
+-- ║   PUNCH                                  ║
 -- ╚══════════════════════════════════════════╝
 
-local function updatePips(left, max, typeName)
-	local typeConf = CONFIG[typeName] or CONFIG.Normal
-	local display  = math.min(max, 10)
+local function tryPunch()
+	if punchCooldown then return end
+	if Humanoid.Health <= 0 then return end
+	if isShielded then return end
 
-	countLabel.Text = max > 10 and ("x"..max) or ""
+	punchCooldown = true
+	task.delay(CONFIG.PunchCooldown, function() punchCooldown = false end)
 
-	for i = 1, display do
-		local pip = pips[i]; if not pip then continue end
-		if i <= left then
-			pip.Image = typeConf.PipFull
-			pip.ImageColor3 = getPipColor(typeConf, i)
-			TweenService:Create(pip,
-				TweenInfo.new(0.1, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-				{ ImageTransparency = 0, Size = UDim2.new(0, pipSize, 0, pipSize) }
-			):Play()
-		else
-			pip.Image = typeConf.PipEmpty
-			TweenService:Create(pip,
-				TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-				{ ImageTransparency = 0.55, Size = UDim2.new(0, pipSize-6, 0, pipSize-6) }
-			):Play()
+	-- Check players first
+	local closest = nil; local closestDist = CONFIG.HitRange
+	for _, op in ipairs(Players:GetPlayers()) do
+		if op == Player then continue end
+		local oc = op.Character; if not oc then continue end
+		local oh = oc:FindFirstChild("HumanoidRootPart"); if not oh then continue end
+		local om = oc:FindFirstChild("Humanoid")
+		if not om or om.Health <= 0 then continue end
+		local d = (HRP.Position - oh.Position).Magnitude
+		if d < closestDist then closestDist = d; closest = op end
+	end
+
+	if closest then
+		RequestHit:FireServer(closest)
+		shakeCamera(0.15, 0.08)
+		return
+	end
+
+	-- Check orbs
+	local closestOrb = nil; local closestOrbDist = CONFIG.HitRange
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj.Name == "JumpOrb" and obj:IsA("BasePart") then
+			local d = (HRP.Position - obj.Position).Magnitude
+			if d < closestOrbDist then closestOrbDist = d; closestOrb = obj end
 		end
 	end
-end
 
--- ╔══════════════════════════════════════════╗
--- ║   EDGE GLOW                              ║
--- ╚══════════════════════════════════════════╝
-
-local glowImg = Instance.new("ImageLabel")
-glowImg.Size  = UDim2.new(1,0,1,0)
-glowImg.BackgroundTransparency = 1
-glowImg.Image = "rbxasset://textures/ui/VignetteBlur.png"
-glowImg.ImageTransparency = 1
-glowImg.ZIndex = 10
-glowImg.Parent = ScreenGui
-
-local function flashEdge(color, duration)
-	glowImg.ImageColor3 = color
-	TweenService:Create(glowImg, TweenInfo.new(0.12), { ImageTransparency = 0.3 }):Play()
-	task.delay(duration or 0.4, function()
-		TweenService:Create(glowImg, TweenInfo.new(0.35), { ImageTransparency = 1 }):Play()
-	end)
-end
-
--- ╔══════════════════════════════════════════╗
--- ║   MOBILE TOOLBAR  (bottom center)        ║
--- ║   Visible on mobile only                 ║
--- ╚══════════════════════════════════════════╝
-
-local isMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
-
--- Toolbar background bar
-local Toolbar = makeFrame("Toolbar", ScreenGui,
-	UDim2.new(0, 220, 0, 80),
-	UDim2.new(1, -230, 1, -100),
-	Color3.fromRGB(15, 15, 30), 0.25, 40
-)
-addStroke(Toolbar, 2, Color3.fromRGB(120, 150, 255), 0.4)
-Toolbar.Visible = isMobile
-
--- Layout for buttons inside toolbar
-local toolbarLayout = Instance.new("UIListLayout")
-toolbarLayout.FillDirection       = Enum.FillDirection.Horizontal
-toolbarLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-toolbarLayout.VerticalAlignment   = Enum.VerticalAlignment.Center
-toolbarLayout.Padding             = UDim.new(0, 16)
-toolbarLayout.Parent              = Toolbar
-
-local toolbarPad = Instance.new("UIPadding")
-toolbarPad.PaddingLeft  = UDim.new(0, 16)
-toolbarPad.PaddingRight = UDim.new(0, 16)
-toolbarPad.Parent       = Toolbar
-
--- ── PUNCH button (left) ──────────────────────────────────────
-local PunchBtn = makeFrame("PunchBtn", Toolbar,
-	UDim2.new(0, 64, 0, 64),
-	UDim2.new(0, 0, 0, 0),
-	Color3.fromRGB(50, 20, 20), 0.2, 32
-)
-addStroke(PunchBtn, 2, Color3.fromRGB(255, 100, 100), 0.4)
-makeImage("Icon", PunchBtn,
-	UDim2.new(0.72, 0, 0.72, 0), UDim2.new(0.14, 0, 0.05, 0),
-	CONFIG.MobilePunchImage)
-
-local PunchLbl = Instance.new("TextLabel")
-PunchLbl.Size  = UDim2.new(1, 0, 0, 16)
-PunchLbl.Position = UDim2.new(0, 0, 1, -18)
-PunchLbl.BackgroundTransparency = 1
-PunchLbl.Text  = "HIT"
-PunchLbl.TextColor3 = Color3.fromRGB(255, 160, 160)
-PunchLbl.TextScaled = true
-PunchLbl.Font  = Enum.Font.GothamBold
-PunchLbl.Parent = PunchBtn
-
-local PunchDetector = Instance.new("ImageButton")
-PunchDetector.Size  = UDim2.new(1, 0, 1, 0)
-PunchDetector.BackgroundTransparency = 1
-PunchDetector.Parent = PunchBtn
-
--- ── JUMP button (center, bigger) ─────────────────────────────
-local JumpBtn = makeFrame("JumpBtn", Toolbar,
-	UDim2.new(0, 76, 0, 76),
-	UDim2.new(0, 0, 0, 0),
-	Color3.fromRGB(20, 40, 80), 0.15, 38
-)
-addStroke(JumpBtn, 2.5, Color3.fromRGB(120, 180, 255), 0.3)
-makeImage("Icon", JumpBtn,
-	UDim2.new(0.75, 0, 0.75, 0), UDim2.new(0.125, 0, 0.05, 0),
-	CONFIG.MobileJumpImage)
-
-local JumpLbl = Instance.new("TextLabel")
-JumpLbl.Size  = UDim2.new(1, 0, 0, 16)
-JumpLbl.Position = UDim2.new(0, 0, 1, -18)
-JumpLbl.BackgroundTransparency = 1
-JumpLbl.Text  = "JUMP"
-JumpLbl.TextColor3 = Color3.fromRGB(160, 200, 255)
-JumpLbl.TextScaled = true
-JumpLbl.Font  = Enum.Font.GothamBold
-JumpLbl.Parent = JumpBtn
-
-local JumpDetector = Instance.new("ImageButton")
-JumpDetector.Size  = UDim2.new(1, 0, 1, 0)
-JumpDetector.BackgroundTransparency = 1
-JumpDetector.Parent = JumpBtn
-
--- ── Button press animations ───────────────────────────────────
-local function pressAnim(btn, detector)
-	detector.MouseButton1Down:Connect(function()
-		TweenService:Create(btn,
-			TweenInfo.new(0.07, Enum.EasingStyle.Quad),
-			{ Size = UDim2.new(0, btn.Size.X.Offset - 8, 0, btn.Size.Y.Offset - 8) }
-		):Play()
-	end)
-	detector.MouseButton1Up:Connect(function()
-		TweenService:Create(btn,
-			TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-			{ Size = UDim2.new(0, btn.Size.X.Offset + 8, 0, btn.Size.Y.Offset + 8) }
-		):Play()
-	end)
-end
-
-pressAnim(JumpBtn, JumpDetector)
-pressAnim(PunchBtn, PunchDetector)
-
--- ── Button actions ────────────────────────────────────────────
-JumpDetector.MouseButton1Down:Connect(function()
-	local bf = PlayerGui:FindFirstChild("RequestJump")
-	if bf then bf:Invoke() end
-end)
-
-PunchDetector.MouseButton1Down:Connect(function()
-	local bf = PlayerGui:FindFirstChild("RequestPunch")
-	if bf then bf:Invoke() end
-end)
-
--- ╔══════════════════════════════════════════╗
--- ║   JUMP UPDATE HANDLER                    ║
--- ╚══════════════════════════════════════════╝
-
-JumpUpdate.Event:Connect(function(normalLeft, normalMax, casualLeft, casualMax, jumpType)
-	local activeLeft = jumpType == "CasualWing" and casualLeft or normalLeft
-	local activeMax  = jumpType == "CasualWing" and casualMax  or normalMax
-
-	-- Rebuild panel if count changed OR type switched
-	if activeMax ~= lastMax or jumpType ~= lastType then
-		buildPanel(activeMax, jumpType)
-		lastMax  = activeMax
-		lastType = jumpType
+	if closestOrb then
+		local orbType = closestOrb:FindFirstChild("OrbType")
+		RequestOrbHit:FireServer(closestOrb, orbType and orbType.Value or "Normal")
+		shakeCamera(0.1, 0.06)
+		local isNormal = (not orbType) or orbType.Value == "Normal"
+		screenFlash(isNormal and Color3.fromRGB(255,220,50) or Color3.fromRGB(80,220,255))
 	end
+end
 
-	updatePips(activeLeft, activeMax, jumpType)
+-- ╔══════════════════════════════════════════╗
+-- ║   INPUT                                  ║
+-- ╚══════════════════════════════════════════╝
 
-	-- Edge glow when out of jumps
-	local typeConf = CONFIG[jumpType] or CONFIG.Normal
-	if activeLeft == 0 then
-		flashEdge(typeConf.GlowColor, 0.5)
+UserInputService.JumpRequest:Connect(doJump)
+
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.F
+		or input.UserInputType == Enum.UserInputType.MouseButton1 then
+		tryPunch()
 	end
 end)
 
+local jumpFunc    = Instance.new("BindableFunction")
+jumpFunc.Name     = "RequestJump"; jumpFunc.Parent = PlayerGui
+jumpFunc.OnInvoke = doJump
+
+local punchFunc   = Instance.new("BindableFunction")
+punchFunc.Name    = "RequestPunch"; punchFunc.Parent = PlayerGui
+punchFunc.OnInvoke = tryPunch
+
 -- ╔══════════════════════════════════════════╗
--- ║   INIT                                   ║
+-- ║   DEATH CLEANUP                          ║
 -- ╚══════════════════════════════════════════╝
 
-buildPanel(CONFIG.NormalMin, "Normal")
-updatePips(CONFIG.NormalMin, CONFIG.NormalMin, "Normal")
+Humanoid.Died:Connect(function()
+	notifyGUI()
+	task.delay(0.1, function()
+		if flashGui and flashGui.Parent then flashGui:Destroy() end
+	end)
+end)
 
-print("[GameplayGUI] Loaded!")
+print("[MultiJump v5] Ready!")
